@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DWG 批量转 PDF</title>
+<style>
+  :root{
+    --bg:#f4f6f8; --card:#ffffff; --border:#e4e7ec; --text:#1f2937;
+    --muted:#6b7280; --accent:#2563eb; --accent-dark:#1d4ed8;
+    --ok:#15803d; --warn:#b45309; --err:#dc2626; --soft:#eff6ff;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 "Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+    padding:28px 20px 48px;
+  }
+  .wrap{max-width:960px;margin:0 auto;}
+  header{margin-bottom:18px;}
+  h1{font-size:23px;margin:0 0 6px;font-weight:700;letter-spacing:.2px;}
+  .sub{color:var(--muted);font-size:13px;}
+  .card{
+    background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:20px 22px;margin-bottom:16px;box-shadow:0 1px 2px rgba(16,24,40,.04);
+  }
+  .card h2{
+    font-size:13px;font-weight:700;color:var(--muted);margin:0 0 16px;
+    letter-spacing:1px;text-transform:uppercase;
+  }
+  .row{display:flex;align-items:center;gap:12px;margin-bottom:12px;}
+  .row:last-child{margin-bottom:0;}
+  .row > label:first-child{
+    width:132px;flex:0 0 132px;color:#374151;font-size:13.5px;
+  }
+  input[type=text]{
+    flex:1;min-width:0;height:38px;padding:0 12px;font-size:13.5px;
+    border:1px solid var(--border);border-radius:9px;background:#fcfcfd;
+    color:var(--text);font-family:inherit;transition:.15s;
+  }
+  input[type=text]:focus{
+    outline:none;border-color:var(--accent);background:#fff;
+    box-shadow:0 0 0 3px rgba(37,99,235,.12);
+  }
+  input[type=text]:disabled{background:#f3f4f6;color:#9ca3af;}
+  button{
+    height:38px;padding:0 16px;border-radius:9px;border:1px solid var(--border);
+    background:#fff;color:#374151;font-size:13.5px;font-family:inherit;
+    cursor:pointer;white-space:nowrap;transition:.15s;
+  }
+  button:hover:not(:disabled){background:#f8fafc;border-color:#cfd4dc;}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  button.primary{
+    background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;
+    min-width:118px;
+  }
+  button.primary:hover:not(:disabled){background:var(--accent-dark);border-color:var(--accent-dark);}
+  button.danger{color:var(--err);border-color:#f3c6c6;}
+  button.danger:hover:not(:disabled){background:#fef2f2;border-color:#f0b0b0;}
+  .hint{color:var(--muted);font-size:12.5px;line-height:1.7;}
+  .hint code{
+    background:#f1f5f9;border-radius:5px;padding:1px 6px;
+    font-family:Consolas,monospace;color:#334155;
+  }
+  .checks{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:2px;}
+  .checks label{
+    display:flex;align-items:center;gap:7px;font-size:13.5px;color:#374151;
+    cursor:pointer;user-select:none;
+  }
+  .checks input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;}
+  .actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .actions .spacer{flex:1;}
+  .bar-wrap{
+    margin-top:18px;height:10px;border-radius:6px;background:#eceff3;overflow:hidden;
+  }
+  .bar{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#2563eb);
+       border-radius:6px;transition:width .3s ease;}
+  .statusline{display:flex;align-items:center;gap:16px;margin-top:12px;flex-wrap:wrap;}
+  #status{color:var(--muted);font-size:13px;flex:1;min-width:200px;}
+  .chips{display:flex;gap:8px;}
+  .chip{
+    font-size:12.5px;padding:3px 11px;border-radius:20px;background:#f3f4f6;color:#4b5563;
+    font-variant-numeric:tabular-nums;
+  }
+  .chip.ok{background:#ecfdf3;color:var(--ok);}
+  .chip.skip{background:#fffbeb;color:var(--warn);}
+  .chip.err{background:#fef2f2;color:var(--err);}
+  #log{
+    height:290px;overflow:auto;background:#fbfcfd;border:1px solid var(--border);
+    border-radius:10px;padding:12px 14px;font:12.5px/1.75 Consolas,"Courier New",monospace;
+    color:#334155;white-space:pre-wrap;word-break:break-all;
+  }
+  #log .ok{color:var(--ok);}
+  #log .err{color:var(--err);}
+  #log .preview{color:var(--accent);}
+  #log .dim{color:#9ca3af;}
+  #log .head{color:#111827;font-weight:600;}
+  .foot{color:#9ca3af;font-size:12px;text-align:center;margin-top:6px;line-height:1.9;}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#cbd5e1;margin-right:6px;}
+  .dot.run{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15);}
+
+  .banner{
+    display:flex;gap:10px;align-items:flex-start;
+    background:#fef2f2;border:1px solid #f6c9c9;color:#b91c1c;
+    border-radius:11px;padding:13px 16px;font-size:15px;line-height:1.6;
+    margin-bottom:14px;
+  }
+  .banner.warn{background:#fffbeb;border-color:#f6e0a8;color:#92400e;}
+
+  /* ---------- 文件夹选择器（大号，比常规界面大 30%） ---------- */
+  .mask{
+    position:fixed;inset:0;background:rgba(15,23,42,.42);z-index:60;
+    display:none;align-items:center;justify-content:center;padding:24px;
+  }
+  .mask.show{display:flex;}
+  .picker{
+    width:min(1060px,96vw);height:min(730px,92vh);
+    background:#fff;border-radius:16px;overflow:hidden;
+    display:flex;flex-direction:column;
+    box-shadow:0 28px 70px rgba(15,23,42,.32);
+  }
+  .pk-head{
+    display:flex;align-items:center;gap:12px;
+    padding:18px 22px;border-bottom:1px solid var(--border);
+  }
+  .pk-head h3{font-size:21px;margin:0;font-weight:700;letter-spacing:.2px;}
+  .pk-head .sub{font-size:15px;color:var(--muted);margin-left:auto;}
+  .pk-x{
+    width:40px;height:40px;padding:0;border:none;background:transparent;
+    font-size:22px;line-height:1;color:#94a3b8;border-radius:10px;
+  }
+  .pk-x:hover{background:#f1f5f9;color:#475569;}
+  .pk-body{flex:1;display:flex;min-height:0;}
+
+  .pk-side{
+    width:236px;flex:0 0 236px;background:#fbfcfd;border-right:1px solid var(--border);
+    padding:12px 10px 16px;overflow:auto;
+  }
+  .pk-side .grp{
+    font-size:13.5px;color:#9ca3af;font-weight:700;letter-spacing:1.2px;
+    margin:12px 10px 6px;
+  }
+  .pk-item{
+    display:flex;align-items:center;gap:9px;
+    padding:9px 10px;border-radius:9px;font-size:16.5px;color:#374151;
+    cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .pk-item:hover{background:#eef2f7;}
+  .pk-item.active{background:#e8f0fe;color:#1d4ed8;font-weight:600;}
+  .pk-item svg{width:19px;height:19px;flex:0 0 19px;}
+
+  .pk-main{flex:1;display:flex;flex-direction:column;min-width:0;padding:14px 16px 12px;}
+  .pk-bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;}
+  .pk-bar input[type=text]{
+    flex:1;height:44px;font-size:16.5px;border-radius:10px;
+    padding:0 14px;background:#fff;
+  }
+  .pk-bar button{height:44px;font-size:16px;border-radius:10px;padding:0 16px;}
+
+  .pk-list{
+    flex:1;overflow:auto;border:1px solid var(--border);border-radius:12px;
+    background:#fff;padding:8px;min-height:0;
+  }
+  .fitem{
+    display:flex;align-items:center;gap:11px;
+    padding:10px 12px;border-radius:9px;font-size:17px;color:#1f2937;
+    cursor:default;user-select:none;
+  }
+  .fitem:hover{background:#f3f6fa;}
+  .fitem.sel{background:#e8f0fe;box-shadow:inset 0 0 0 1.5px #b9cffb;}
+  .fitem svg{width:21px;height:21px;flex:0 0 21px;}
+  .fitem .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .pk-empty{
+    padding:36px 14px;text-align:center;color:#9ca3af;font-size:16px;line-height:1.9;
+  }
+  .pk-tip{font-size:15px;color:var(--muted);margin-top:10px;min-height:22px;}
+  .pk-tip b{color:#b45309;font-weight:600;}
+
+  .pk-foot{
+    display:flex;align-items:center;gap:14px;
+    padding:14px 20px;border-top:1px solid var(--border);background:#fbfcfd;
+  }
+  .pk-picked{
+    flex:1;min-width:0;font:15.5px/1.5 Consolas,"Microsoft YaHei UI",monospace;
+    color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    background:#fff;border:1px solid var(--border);border-radius:9px;
+    padding:8px 12px;
+  }
+  .pk-foot button{height:44px;font-size:16.5px;padding:0 20px;border-radius:10px;}
+  .pk-foot button.primary{min-width:158px;}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>DWG 批量转 PDF</h1>
+    <div class="sub">把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>分别打印成一个 PDF，文件名默认用图纸名。</div>
+  </header>
+
+  <div class="banner" id="banner" style="display:none"></div>
+
+  <div class="card">
+    <h2>一、文件夹与命名</h2>
+    <div class="row">
+      <label>DWG 所在文件夹</label>
+      <input type="text" id="src" placeholder="例如 D:\项目\建筑图">
+      <button onclick="browse('src', this)">选择…</button>
+    </div>
+
+    <div class="row">
+      <label>PDF 输出文件夹</label>
+      <input type="text" id="out" placeholder="留空则输出到「DWG 所在文件夹\PDF输出」">
+      <button onclick="browse('out', this)">选择…</button>
+    </div>
+
+    <div class="row">
+      <label>文件名前缀</label>
+      <input type="text" id="prefix" placeholder="可留空；例如填 A-" style="max-width:280px">
+      <div class="hint" id="nameHint">命名示例：<code>一层平面图.pdf</code></div>
+    </div>
+
+    <div class="row">
+      <label>选项</label>
+      <div class="checks">
+        <label><input type="checkbox" id="recursive" checked> 包含子文件夹</label>
+        <label><input type="checkbox" id="keep_subdir"> 输出保持目录结构</label>
+        <label><input type="checkbox" id="include_model"> 同时导出模型空间</label>
+        <label><input type="checkbox" id="skip_existing"> 跳过已生成的 PDF</label>
+        <label><input type="checkbox" id="frames" checked> 多图纸按图框拆分（A0-A4）</label>
+        <label><input type="checkbox" id="keep_acad"> 转换后保留 AutoCAD 进程</label>
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:14px">
+      同一文件夹里不同 DWG 出现同名图纸时，会自动补上源文件名区分，例如
+      <code>一层平面图 - 结构B.pdf</code>，不会互相覆盖。<br>
+      勾选「多图纸按图框拆分」时，若图纸布局是空的、所有图都排在一张模型空间里，
+      程序会按 <code>A0-A4</code> 图框逐个输出，每张图自动用它的图幅（A0~A4）和标题栏里的图名；
+      布局里已经有内容的图仍按布局输出。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>二、开始转换</h2>
+    <div class="actions">
+      <button class="primary" id="btnStart" onclick="start()">开始转换</button>
+      <button class="danger" id="btnStop" onclick="stop()" disabled>停止</button>
+      <button id="btnOpen" onclick="openOut()" disabled>打开输出文件夹</button>
+      <div class="spacer"></div>
+      <button id="btnQuit" onclick="quit()">退出程序</button>
+    </div>
+
+    <div class="bar-wrap"><div class="bar" id="bar"></div></div>
+    <div class="statusline">
+      <div id="status"><span class="dot" id="dot"></span><span id="statusText">就绪</span></div>
+      <div class="chips">
+        <span class="chip ok" id="cOk">成功 0</span>
+        <span class="chip skip" id="cSkip">跳过 0</span>
+        <span class="chip err" id="cErr">失败 0</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>三、运行日志</h2>
+    <div id="log"></div>
+  </div>
+
+  <div class="foot">
+    转换过程由本机 AutoCAD 完成，线宽、比例、打印样式与手工打印一致，不会修改原始 DWG。<br>
+    首次运行需要启动 AutoCAD，约 30 秒后日志会出现「已连接」。
+  </div>
+</div>
+
+<div class="mask" id="pkMask">
+  <div class="picker" role="dialog" aria-modal="true" aria-labelledby="pkTitle">
+    <div class="pk-head">
+      <h3 id="pkTitle">选择文件夹</h3>
+      <div class="sub" id="pkSub">单击选中文件夹，双击进入</div>
+      <button class="pk-x" onclick="pkCancel()" title="关闭">✕</button>
+    </div>
+    <div class="pk-body">
+      <aside class="pk-side" id="pkSide"></aside>
+      <section class="pk-main">
+        <div class="pk-bar">
+          <button onclick="pkUp()" title="上一级">↑ 上一级</button>
+          <input type="text" id="pkPath" spellcheck="false" placeholder="可以直接粘贴或输入完整路径，回车跳转">
+          <button onclick="pkGo()">转到</button>
+        </div>
+        <div class="pk-list" id="pkList"></div>
+        <div class="pk-tip" id="pkTip"></div>
+      </section>
+    </div>
+    <div class="pk-foot">
+      <div class="pk-picked" id="pkPicked">未选择</div>
+      <button onclick="pkCancel()">取消</button>
+      <button class="primary" onclick="pkOk()">选择这个文件夹</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let cursor = 0, timer = null, running = false, totalFiles = 0;
+
+/* ---------- 出错要说出来（不能悄悄没反应） ---------- */
+function banner(msg, kind){
+  const el = $('banner');
+  if(!el) return;
+  if(!msg){ el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = 'flex';
+  el.className = 'banner' + (kind === 'warn' ? ' warn' : '');
+  el.textContent = msg;
+}
+window.addEventListener('error', e => {
+  const msg = '页面脚本出错：' + (e.message || e.error);
+  if($('log')) logLine('× ' + msg);
+  setStatus(msg);
+});
+window.addEventListener('unhandledrejection', e => {
+  const msg = '请求出错：' + ((e.reason && e.reason.message) || e.reason);
+  if($('log')) logLine('× ' + msg);
+  setStatus(msg);
+});
+
+async function ping(){
+  try{
+    const r = await fetch('/api/ping', {cache:'no-store'}).then(r => r.json());
+    if(r && r.ok){ banner(''); return true; }
+  }catch(e){}
+  banner('这个页面已经连不上程序后台了（多半是之前那次运行已退出，或是另一个实例的页面）。'
+       + '关闭本页，重新双击「DWG批量转PDF.exe」即可。', 'warn');
+  return false;
+}
+
+/* ---------- 日志 ---------- */
+function logLine(text){
+  const box = $('log');
+  const div = document.createElement('div');
+  let cls = '';
+  if (/^\s*[√]/.test(text)) cls = 'ok';
+  else if (/^\s*[×]/.test(text)) cls = 'err';
+  else if (text.includes('预览')) cls = 'preview';
+  else if (/^- /.test(text.trim()) || /^\s+- /.test(text)) cls = 'dim';
+  else if (/^\[\d+\/\d+\]/.test(text.trim())) cls = 'head';
+  div.className = cls;
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog(){ $('log').innerHTML = ''; }
+
+/* ---------- 按钮 ---------- */
+function setRunning(v){
+  running = v;
+  $('btnStart').disabled = v;
+  $('btnStop').disabled = !v;
+  const dot = $('dot');
+  if(dot) dot.className = 'dot' + (v ? ' run' : '');
+  ['src','out','prefix','recursive','keep_subdir','include_model','skip_existing','keep_acad','frames']
+    .forEach(id => { const el = $(id); if(el) el.disabled = v; });
+}
+
+function setStatus(t){
+  // 只换文字，不要把 #dot 这个圆点一起重写掉（重写后按 id 就找不到了）
+  const txt = $('statusText');
+  if(txt) txt.textContent = t;
+  const dot = $('dot');
+  if(dot) dot.className = 'dot' + (running ? ' run' : '');
+}
+
+function updateChips(c){
+  $('cOk').textContent = '成功 ' + (c.ok||0);
+  $('cSkip').textContent = '跳过 ' + (c.skip||0);
+  $('cErr').textContent = '失败 ' + (c.fail||0);
+}
+
+function updateBar(done, total){
+  if(!total) return;
+  $('bar').style.width = Math.min(100, done / total * 100) + '%';
+}
+
+/* ---------- 交互 ---------- */
+/* ---------- 文件夹选择器 ---------- */
+const ICO_FOLDER =
+  '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+  '<path d="M3 6.6c0-.9.7-1.6 1.6-1.6h4.1l1.9 2.4h6.2c.9 0 1.6.7 1.6 1.6v8.4c0 .9-.7 1.6-1.6 1.6H4.6c-.9 0-1.6-.7-1.6-1.6z" ' +
+  'fill="#fde69a" stroke="#e0a52b" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+const ICO_PLACE =
+  '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+  '<path d="M4 10.2 12 4l8 6.2V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z" ' +
+  'fill="#eef2f7" stroke="#8b93a1" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+const ICO_DRIVE =
+  '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+  '<rect x="3" y="6" width="18" height="11" rx="2.5" fill="#eef2f7" stroke="#8b93a1" stroke-width="1.6"/>' +
+  '<circle cx="17" cy="11.5" r="1.2" fill="#8b93a1"/></svg>';
+
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const norm = p => String(p || '').toLowerCase().replace(/[\\\/]+$/, '');
+
+let pk = { kind:'src', cur:'', sel:'', parent:'', items:[] };
+
+async function browse(kind){
+  pk.kind = kind;
+  pk.cur = ''; pk.sel = ''; pk.parent = ''; pk.items = [];
+  $('pkTitle').textContent = kind === 'src' ? '选择存放 DWG 的文件夹' : '选择 PDF 输出文件夹';
+  $('pkPicked').textContent = '未选择';
+  $('pkList').innerHTML = '';
+  $('pkTip').textContent = '正在读取…';
+  $('pkMask').classList.add('show');
+  document.body.style.overflow = 'hidden';
+  await pkLoad($(kind).value.trim());
+}
+
+function pkClose(){
+  $('pkMask').classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function pkCancel(){ pkClose(); }
+
+function pkOk(){
+  const p = pk.sel || $('pkPath').value.trim();
+  if(!p){ $('pkTip').innerHTML = '<b>请先选中一个文件夹</b>'; return; }
+  $(pk.kind).value = p;
+  if(pk.kind === 'src' && !$('out').value.trim()){
+    $('out').value = p.replace(/[\\\/]+$/,'') + '\\PDF输出';
+  }
+  pkClose();
+  if(!running) setStatus('已选择：' + p);
+}
+
+async function pkLoad(path){
+  let r = null;
+  try{
+    r = await fetch('/api/ls?path=' + encodeURIComponent(path || '')).then(x => x.json());
+  }catch(e){}
+  if(!r){
+    $('pkTip').innerHTML = '<b>无法读取这个文件夹（服务没有响应）</b>';
+    return;
+  }
+  if(!r.ok){
+    pkRenderSide(r.places || [], r.drives || []);
+    $('pkTip').innerHTML = '<b>' + esc(r.error || '无法读取这个文件夹') + '</b>';
+    return;
+  }
+  pk.cur = r.path;
+  pk.parent = r.parent || '';
+  pk.sel = r.path;
+  $('pkPath').value = r.path;
+  $('pkPicked').textContent = r.path;
+  pkRenderSide(r.places || [], r.drives || []);
+  pkRenderList(r);
+}
+
+function pkRenderSide(places, drives){
+  const side = $('pkSide');
+  const cur = norm(pk.cur);
+  side.innerHTML = '';
+  const add = (title) => {
+    const g = document.createElement('div');
+    g.className = 'grp'; g.textContent = title; side.appendChild(g);
+  };
+  const item = (name, path, icon) => {
+    const el = document.createElement('div');
+    el.className = 'pk-item' + (norm(path) === cur ? ' active' : '');
+    el.innerHTML = icon + '<span></span>';
+    el.lastChild.textContent = name;
+    el.title = path;
+    el.onclick = () => pkLoad(path);
+    side.appendChild(el);
+  };
+  if(places.length) add('常用位置');
+  places.forEach(p => item(p.name, p.path, ICO_PLACE));
+  if(drives.length) add('此电脑');
+  drives.forEach(d => item(d.name, d.path, ICO_DRIVE));
+}
+
+function pkRenderList(r){
+  const box = $('pkList');
+  box.innerHTML = '';
+  pk.items = [];
+  if(!r.dirs.length){
+    box.innerHTML = '<div class="pk-empty">这个文件夹里没有子文件夹<br>' +
+                    '可以直接点右下角「选择这个文件夹」</div>';
+  }else{
+    r.dirs.forEach(d => {
+      const el = document.createElement('div');
+      el.className = 'fitem';
+      el.innerHTML = ICO_FOLDER + '<span class="nm"></span>';
+      el.querySelector('.nm').textContent = d.name;
+      el.title = d.path;
+      el.onclick = () => pkSelect(d.path, el);
+      el.ondblclick = () => { pkLoad(d.path); };
+      pk.items.push(el);
+      box.appendChild(el);
+    });
+  }
+  const n = r.dwg_count || 0;
+  $('pkTip').innerHTML = '当前文件夹里有 <b>' + n + '</b> 个 DWG（不含子文件夹）。' +
+    (n ? '可以直接选这个文件夹。' : '若图纸在子文件夹里，请进去选。');
+}
+
+function pkSelect(path, el){
+  pk.sel = path;
+  $('pkPicked').textContent = path;
+  pk.items.forEach(x => x.classList.remove('sel'));
+  if(el) el.classList.add('sel');
+}
+
+function pkUp(){
+  if(pk.parent) pkLoad(pk.parent);
+  else $('pkTip').innerHTML = '<b>已经是顶层（盘符）了</b>';
+}
+
+function pkGo(){ pkLoad($('pkPath').value.trim()); }
+
+document.addEventListener('keydown', e => {
+  if(!$('pkMask').classList.contains('show')) return;
+  if(e.key === 'Escape'){ e.preventDefault(); pkCancel(); return; }
+  if(e.key === 'Enter'){
+    if(document.activeElement === $('pkPath')){ e.preventDefault(); pkGo(); }
+    else { e.preventDefault(); pkOk(); }
+    return;
+  }
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    if(!pk.items.length) return;
+    e.preventDefault();
+    let i = pk.items.findIndex(x => x.classList.contains('sel'));
+    if(e.key === 'ArrowDown') i = Math.min(pk.items.length - 1, i + 1);
+    else i = Math.max(0, i - 1);
+    const el = pk.items[i];
+    pkSelect(el.title, el);
+    el.scrollIntoView({block:'nearest'});
+  }
+});
+
+// 点遮罩空白处关闭
+$('pkMask').addEventListener('mousedown', e => {
+  if(e.target === $('pkMask')) pkCancel();
+});
+
+
+function prefixHint(){
+  const p = $('prefix').value;
+  $('nameHint').innerHTML = '命名示例：<code>' + (p || '') + '一层平面图.pdf</code>';
+}
+
+async function start(){
+  const cfg = {
+    src: $('src').value.trim(),
+    out: $('out').value.trim(),
+    prefix: $('prefix').value,
+    recursive: $('recursive').checked,
+    keep_subdir: $('keep_subdir').checked,
+    include_model: $('include_model').checked,
+    skip_existing: $('skip_existing').checked,
+    keep_acad: $('keep_acad').checked,
+    frames_mode: $('frames').checked ? 'auto' : 'layouts',
+  };
+  if(!cfg.src){ alert('请先选择 DWG 所在文件夹'); return; }
+
+  clearLog();
+  $('bar').style.width = '0%';
+  setRunning(true);
+  setStatus('正在提交任务…');
+  logLine('正在提交：' + cfg.src);
+
+  // 后台如果迟迟不回应，也要在日志里说明，别让界面看起来像卡死
+  const slow = setTimeout(() => {
+    logLine('（后台正在读取文件夹并启动 AutoCAD，首次约 30 秒，请稍候…）');
+  }, 1500);
+
+  try{
+    const r = await fetch('/api/start', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(cfg)
+    }).then(r => r.json());
+    clearTimeout(slow);
+
+    if(!r.ok){
+      setRunning(false); setStatus('就绪');
+      logLine('× ' + (r.error || '启动失败'));
+      alert(r.error || '启动失败');
+      return;
+    }
+    cursor = r.seq;
+    totalFiles = r.count || 0;
+    updateBar(0, totalFiles);
+    $('btnOpen').disabled = false;
+    setStatus('已提交，共 ' + totalFiles + ' 个 DWG，正在逐张出图…');
+    poll();
+  }catch(e){
+    clearTimeout(slow);
+    setRunning(false); setStatus('就绪');
+    logLine('× 无法连接本机服务：' + (e && e.message ? e.message : e));
+    banner('这个页面连不上程序后台（服务可能已经退出）。请重新双击「DWG批量转PDF.exe」。', 'warn');
+    alert('无法连接本机服务，请重新双击「DWG批量转PDF.exe」。');
+  }
+}
+
+async function stop(){
+  $('btnStop').disabled = true;
+  setStatus('正在停止…');
+  try{ await fetch('/api/stop', {method:'POST'}); }catch(e){}
+}
+
+async function openOut(){
+  try{
+    const r = await fetch('/api/openout').then(r => r.json());
+    if(!r.ok) alert(r.error || '打开失败');
+  }catch(e){}
+}
+
+async function quit(){
+  if(running && !confirm('正在转换中，确定退出吗？')) return;
+  try{ await fetch('/api/quit'); }catch(e){}
+  document.body.innerHTML =
+    '<div style="padding:80px;text-align:center;color:#6b7280;font-size:15px">' +
+    '程序已退出，可以直接关闭这个页面。</div>';
+}
+
+/* ---------- 轮询 ---------- */
+async function poll(){
+  clearTimeout(timer);
+  try{
+    const d = await fetch('/api/poll?after=' + cursor).then(r => r.json());
+    cursor = d.seq || cursor;
+
+    (d.events || []).forEach(ev => {
+      if(ev.type === 'log'){
+        logLine(ev.message);
+      }else if(ev.type === 'progress'){
+        totalFiles = ev.total || totalFiles;
+        setStatus('正在处理第 ' + ev.current + '/' + ev.total + ' 个：' + ev.dwg);
+        updateBar(ev.current - 1, ev.total);
+      }else if(ev.type === 'result'){
+        updateBar(d.counters.total || 0, totalFiles);
+      }else if(ev.type === 'done'){
+        const s = ev.summary || {};
+        setRunning(false);
+        setStatus('完成：成功 ' + (s.ok||0) + ' 个，跳过 ' + (s.skip||0) + ' 个，失败 ' + (s.fail||0) + ' 个');
+        $('bar').style.width = '100%';
+        $('btnOpen').disabled = false;
+      }else if(ev.type === 'fatal'){
+        setRunning(false);
+        setStatus('出错了：' + ev.message);
+        logLine('× ' + ev.message);
+      }
+    });
+
+    updateChips(d.counters || {});
+    if(d.running || running){
+      timer = setTimeout(poll, 400);
+    }else{
+      updateChips(d.counters || {});
+    }
+  }catch(e){
+    timer = setTimeout(poll, 1200);
+  }
+}
+
+/* 页面加载时同步一次状态（刷新页面不丢进度） */
+(async function init(){
+  $('prefix').addEventListener('input', prefixHint);
+  prefixHint();
+  ping();
+  setInterval(ping, 5000);            // 后台一旦没了，页面立刻提示
+  try{
+    const d = await fetch('/api/poll?after=0').then(r => r.json());
+    updateChips(d.counters || {});
+    if(d.running){
+      setRunning(true);
+      (d.events||[]).forEach(ev => { if(ev.type === 'log') logLine(ev.message); });
+      cursor = d.seq; poll();
+    }else if(d.finished && d.out_dir){
+      $('btnOpen').disabled = false;
+    }
+  }catch(e){
+    banner('这个页面连不上程序后台（服务可能未启动或已退出）。'
+         + '请重新双击「DWG批量转PDF.exe」。', 'warn');
+  }
+})();
+</script>
+</body>
+</html>
