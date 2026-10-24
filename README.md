@@ -1,186 +1,191 @@
-# DWG 批量转 PDF
+# DWG2PDF — Batch DWG → PDF
 
-把指定文件夹里所有 DWG 的**每一张图纸（布局）分别打印成一个 PDF**，文件名默认取图纸名，可加统一前缀。
+Prints **every sheet (layout) of every DWG in a folder as its own PDF**, named after the sheet, with an optional common prefix.
 
-比如一个 DWG 里有「一层平面图 / 二层平面图 / 屋顶排水图」三张图纸，
-加前缀 `A-` 后就会得到三个文件：`A-一层平面图.pdf`、`A-二层平面图.pdf`、`A-屋顶排水图.pdf`。
+For example, a DWG containing three sheets — `Ground Floor`, `First Floor`, `Roof Drainage` —
+becomes three files with the prefix `A-`: `A-Ground Floor.pdf`, `A-First Floor.pdf`, `A-Roof Drainage.pdf`.
+
+English | [简体中文](README.zh-CN.md)
+
+> **Note on languages:** this README, the CLI flags and the log *file names* are in English.
+> The GUI labels and the log *messages* inside the app are still in Chinese (an English UI is planned).
 
 ---
 
-## 一、怎么用（推荐：双击 exe）
+## 1. Quick start (recommended: the `.exe`)
 
-双击 **`DWG2PDF.exe`** → 浏览器自动打开操作界面：
+Double-click **`DWG2PDF.exe`** — your browser opens the control page:
 
-1. 选「DWG 所在文件夹」（默认会连同子文件夹一起处理）；
-2. 选「PDF 输出文件夹」（留空则自动输出到 `DWG 所在文件夹\PDF输出`）；
-3. 需要的话填「文件名前缀」，例如 `A-`；
-4. 点 **开始转换**，日志会逐张打印进度，结束后可直接打开输出文件夹。
+1. Pick the **folder that contains your DWGs** (sub-folders are included by default);
+2. Pick the **output folder** (leave empty → `DWG folder\PDF输出`);
+3. Optionally set a **filename prefix**, e.g. `A-`;
+4. Click **Start** and watch the log. When it finishes, open the output folder directly from the page.
 
-> 点「选择…」打开的是程序自带的文件夹选择器（大窗口、大字），左侧是常用位置与盘符，
-> 中间双击进入子文件夹、单击选中，也可以把路径直接粘到上方输入框按回车跳转；
-> 下方会提示当前文件夹里有几个 DWG。
+> The *Browse* button opens the app's own folder picker (large window, large text).
+> Left side: common locations and drive letters. Middle: double-click to enter a folder, single click to select.
+> You can also paste a path into the box at the top and press Enter. The bottom line tells you how many DWGs the current folder holds.
 
-> 这个 exe 是单文件、免安装的：拷到 U 盘或别的电脑都能直接双击运行，
-> **不需要装 Python**，只要那台电脑装了 AutoCAD 即可。
+> The exe is a **single-file, no-install** build: copy it to a USB stick or another PC and double-click.
+> **Python is not required** — that machine only needs AutoCAD installed.
 
-> 转换时 AutoCAD 在后台运行（看不到窗口）。首次启动约 30 秒，
-> 日志出现「已连接 AutoCAD」之后就是正常的出图速度了。
-> 想下次更快，可以勾选「转换后保留 AutoCAD 进程」。
+> AutoCAD runs in the background during conversion (no visible window). The first launch takes about 30 seconds;
+> after the log shows the AutoCAD connection, plotting runs at normal speed.
+> Tick *Keep AutoCAD running* if you want the next run to start faster.
 
-### 用源码方式启动（改了代码后想立刻试）
+### Running from source (to try code changes immediately)
 
-双击 **`start.bat`**，效果与 exe 完全一样，只是走本机 Python 环境。
+Double-click **`start.bat`**. It behaves exactly like the exe, but uses the local Python environment.
 
-## 二、怎么用（命令行 / 批处理）
+## 2. Command line / batch use
 
 ```bat
-:: 基本用法：整个文件夹 → 指定输出目录
-python dwg2pdf.py -s "D:\项目\建筑图" -o "D:\出图\PDF"
+:: Basic: whole folder -> output directory
+python dwg2pdf.py -s "D:\Projects\Architecture" -o "D:\Plot\PDF"
 
-:: 加文件名前缀
-python dwg2pdf.py -s "D:\项目\建筑图" -o "D:\出图\PDF" -p "A-"
+:: With a filename prefix
+python dwg2pdf.py -s "D:\Projects\Architecture" -o "D:\Plot\PDF" -p "A-"
 
-:: 只转新增（断点续转，已生成的跳过）
-python dwg2pdf.py -s "D:\项目\建筑图" -o "D:\出图\PDF" -p "A-" --skip-existing
+:: Resume: skip PDFs that already exist
+python dwg2pdf.py -s "D:\Projects\Architecture" -o "D:\Plot\PDF" -p "A-" --skip-existing
 
-:: 先看会生成哪些文件，不实际出图
-python dwg2pdf.py -s "D:\项目\建筑图" -o "D:\出图\PDF" -p "A-" --dry-run
+:: Dry run: list what would be produced, plot nothing
+python dwg2pdf.py -s "D:\Projects\Architecture" -o "D:\Plot\PDF" -p "A-" --dry-run
 
-:: 单独一个 DWG 也可以
-python dwg2pdf.py -s "D:\项目\建筑图\建筑A.dwg" -o "D:\出图\PDF"
+:: A single DWG works too
+python dwg2pdf.py -s "D:\Projects\Architecture\Building-A.dwg" -o "D:\Plot\PDF"
 ```
 
-### 参数一览
+### Options
 
-| 参数 | 说明 |
-|------|------|
-| `-s, --src` | 源文件夹（或单个 .dwg 文件），必填 |
-| `-o, --out` | PDF 输出文件夹，必填，不存在会自动创建 |
-| `-p, --prefix` | 文件名前缀，默认空 |
-| `-t, --tpl` | 命名模板，默认 `{prefix}{layout}`，占位符：`{prefix}` 前缀、`{layout}` 图纸名、`{dwg}` 源文件名、`{n}` 序号 |
-| `--include-model` | 同时导出模型空间（默认只导图纸布局） |
-| `--frames` | 强制按模型空间图框拆分（每张 A0-A4 图框一个 PDF） |
-| `--layouts` | 只按图纸布局输出，不做图框拆分 |
-| `--no-recursive` | 只处理第一层，不进子文件夹 |
-| `--keep-subdir` | 输出目录中保持源文件夹结构 |
-| `--skip-existing` | 跳过已存在的 PDF，适合断点续转 |
-| `--pc3` | 强制使用指定打印设备，默认 `DWG To PDF.pc3` |
-| `--dry-run` | 只列出将生成的文件，不出图 |
-| `--check` | 只检查 AutoCAD 是否可用、有多少个 DWG |
-| `--keep-acad` | 转换完保留 AutoCAD 进程（下次启动更快） |
-| `--json` | 输出机器可读的结果（便于接入其它流程） |
-| `--log 文件` | 同时把日志写入文件 |
+| Option | Description |
+|--------|-------------|
+| `-s, --src` | Source folder (or a single `.dwg` file). Required. |
+| `-o, --out` | Output folder. Required; created if missing. |
+| `-p, --prefix` | Filename prefix. Default: empty. |
+| `-t, --tpl` | Naming template. Default `{prefix}{layout}`. Placeholders: `{prefix}`, `{layout}` (sheet name), `{dwg}` (source file name), `{n}` (index). |
+| `--include-model` | Also export model space (by default only layouts are plotted). |
+| `--frames` | Force frame-based splitting in model space (one PDF per A0–A4 frame). |
+| `--layouts` | Layouts only, never split by frame. |
+| `--no-recursive` | Top level only, ignore sub-folders. |
+| `--keep-subdir` | Mirror the source folder structure under the output folder. |
+| `--skip-existing` | Skip PDFs that already exist (resume an interrupted run). |
+| `--pc3` | Force a plot device. Default `DWG To PDF.pc3`. |
+| `--dry-run` | List the files that would be produced; plot nothing. |
+| `--check` | Only check that AutoCAD is reachable and count the DWGs. |
+| `--keep-acad` | Keep the AutoCAD process alive after conversion (faster next start). |
+| `--json` | Machine-readable result output (for pipelines). |
+| `--log FILE` | Also write the log to a file. |
 
-退出码：`0` 全部成功，`2` 有失败，`3` 环境/运行错误。
+Exit codes: `0` all succeeded, `2` some files failed, `3` environment/runtime error.
 
-## 三、一个 DWG 里有多张图纸怎么办
+## 3. When one DWG holds several sheets
 
-分两种情况，程序会自动判断：
+Two cases; the app decides automatically.
 
-**1）图纸画在「布局」里（有多个 Layout）** → 每个布局输出一个 PDF，文件名用布局名（原有行为）。
+**1) Sheets live on layouts** → one PDF per layout, named after the layout (classic behaviour).
 
-**2）所有图都排在模型空间里（没有可用布局）** → 程序按**图框**拆分，每张图框输出一个 PDF：
+**2) Everything is drawn in model space** (no usable layout) → the app splits by **title-block frame**, one PDF per frame:
 
-- 识别依据：图框块的命名约定 `A0 / A1 / A2 / A3 / A4`（块内那个最大的闭合矩形就是图框）；
-  没有这种命名时，退而识别尺寸等于「标准图幅 × 常见比例」的矩形（如 118900×84100 = A0×1:100）。
-- **每张 PDF 的页面自动用该图自己的图幅**（A0 / A1 / A2 …），并按窗口出图、布满图纸，
-  也就是 1:100 的图仍然按 1:100 出，不会被统一成一种纸张。
-- **文件名取该图标题栏里的图名**（如「一层动力平面图」）；取不到时退回图号（如 `FD-12`），
-  再取不到就是 `图纸01`。
-- 只有在「布局全空」时才启用图框拆分，所以已有布局的图纸不会被改变输出方式；
-  想强制按图框拆，用 `--frames`；想强制只用布局，用 `--layouts`。
+- Detection: frames are blocks named `A0 / A1 / A2 / A3 / A4` (the largest closed rectangle inside the block is the frame).
+  Without such names it falls back to rectangles whose size equals a standard sheet size × a common scale
+  (e.g. 118900 × 84100 = A0 at 1:100).
+- **Each PDF uses that sheet's own paper size** (A0 / A1 / A2 …), plotted by window with *fit to paper*,
+  so a 1:100 drawing stays at 1:100 instead of being squeezed onto one common sheet size.
+- **The filename comes from the title in that sheet's title block** (e.g. `Power Plan L1`); if unavailable it falls back to
+  the drawing number (e.g. `FD-12`), then to `Sheet01`.
+- Frame splitting only kicks in when *all layouts are empty*, so drawings that already have layouts are never changed.
+  Force it with `--frames`; force layout-only with `--layouts`.
 
-实测样例（`某数据中心---电气图纸.dwg`）：模型空间里 16 张图（A0×5、A1×9、A2×2），
-一次输出 16 个 PDF，幅面分别是 1189×841、841×594、594×420 mm，文件名全部是图名。
+Measured sample (`<data-centre>---electrical.dwg`): 16 sheets in model space (5×A0, 9×A1, 2×A2) →
+16 PDFs at 1189×841, 841×594 and 594×420 mm, every filename taken from the drawing title.
 
-## 四、命名规则
+## 4. Naming rules
 
-| 情况 | 结果 |
-|------|------|
-| 前缀留空 | `一层平面图.pdf` |
-| 前缀 `A-` | `A-一层平面图.pdf` |
-| 不同 DWG 里有同名图纸 | `一层平面图.pdf` + `一层平面图 - 结构B.pdf`（自动补源文件名，不会互相覆盖） |
-| 还想带源文件名 | `-t "{prefix}{dwg}-{layout}"` → `A-结构B-一层平面图.pdf` |
-| 勾选「保持目录结构」 | 输出目录按源文件夹分目录，重名互不影响 |
+| Case | Result |
+|------|--------|
+| Empty prefix | `Ground Floor.pdf` |
+| Prefix `A-` | `A-Ground Floor.pdf` |
+| Same sheet name in different DWGs | `Ground Floor.pdf` + `Ground Floor - Structure-B.pdf` (source name appended, no overwrite) |
+| Want the source name too | `-t "{prefix}{dwg}-{layout}"` → `A-Structure-B-Ground Floor.pdf` |
+| *Keep folder structure* ticked | Output mirrors the source tree, so identical names never collide |
 
-文件名里的 `\ / : * ? " < > |` 等非法字符会自动替换成 `_`。
+Illegal filename characters (`\ / : * ? " < > |`) are replaced with `_`.
 
-## 五、出图保真度
+## 5. Output fidelity
 
-- 走的是 AutoCAD 自己的出图流程（`PlotToFile`），**与在 CAD 里手工打印效果一致**：
-  图幅、出图比例、打印样式表（CTB/STB）、线宽、图框块、外部参照的显示都沿用图纸原有设置。
-- 图纸原来的打印设备是 PDF 设备（.pc3）时，完全按原页面设置出图；
-  原来是打印机（或没设置），会切换到 `DWG To PDF.pc3` 并尽量还原原来的纸张尺寸。
-- **只读打开**，不修改、不保存原始 DWG，也不会在图纸里留下任何痕迹
-  （缺字体时的替换也只在内存里生效，落盘保存的仍是原图纸）。
-- 图纸没设打印样式表时，会用 `monochrome.ctb` 黑白输出——否则颜色 7（白/黑）会打成白色，在 PDF 上看不见。
-- 按图框拆分时，用「窗口 = 图框、纸张 = 该图图幅、布满图纸」出图，
-  图框按 1:100 画就仍然是 1:100，与在 CAD 里选窗口打印一致。
-- 默认只出「图纸布局」（Tab 上的那些布局），模型空间不出图；
-  需要时勾选「同时导出模型空间」。若某个 DWG 只有模型空间，会按一张 `Model.pdf` 输出。
+- It goes through AutoCAD's own plot pipeline (`PlotToFile`), so **the result matches a manual PLOT**:
+  paper size, plot scale, plot style table (CTB/STB), line weights, frame blocks and external references all follow the drawing's own settings.
+- If the drawing's plot device is already a PDF device (`.pc3`), its page setup is used as-is.
+  If it pointed at a printer (or nothing), the app switches to `DWG To PDF.pc3` and restores the original paper size where possible.
+- **Opened read-only**: the source DWG is never modified or saved, and nothing is written into the drawing
+  (missing-font substitution happens in memory only).
+- When a drawing has no plot style table, `monochrome.ctb` is used — otherwise colour 7 (white/black) plots white and is invisible in the PDF.
+- Frame splitting plots *window = frame, paper = that sheet size, fit to paper*, so a 1:100 frame stays 1:100, exactly like window-plotting in CAD.
+- By default only layouts are plotted, not model space. Enable *Export model space too* when needed.
+  A DWG with model space only produces a single `Model.pdf`.
 
-## 六、运行环境
+## 6. Requirements
 
-| 项目 | 要求 |
-|------|------|
-| 系统 | Windows（本机 Windows 10/11） |
-| CAD | AutoCAD 2013 及以上，**能正常启动、已授权**（本机为 AutoCAD 2024） |
-| Python | **用 exe 时不需要**；用源码方式才需要 Python 3.9+ 且装有 pywin32（本机已配置：`C:\Users\朱柳军\.workbuddy\binaries\python\envs\default`） |
+| Item | Requirement |
+|------|-------------|
+| OS | Windows (developed on Windows 10/11) |
+| CAD | AutoCAD 2013 or newer, **able to start normally and licensed** (developed against AutoCAD 2024). AutoCAD LT and other CAD apps (ZWCAD, GstarCAD…) are not supported — they expose no automation API |
+| Python | **Not needed with the exe.** Source mode needs Python 3.9+ with `pywin32` |
 
-想把程序带到别的电脑：只需拷 `DWG2PDF.exe` 过去（对方须装有 AutoCAD）。
+To run it on another PC, just copy `DWG2PDF.exe` (that PC still needs AutoCAD).
 
-改了源码想重新打包：双击 `build_exe.bat`，产物在 `dist\DWG2PDF.exe`，
-拷回本目录覆盖即可。打包需要 Python 与 `pip install pyinstaller`。
+To rebuild after changing the source, double-click `build_exe.bat`; the output is `dist\DWG2PDF.exe` —
+copy it back over the one in this folder. Rebuilding needs Python plus `pip install pyinstaller`.
 
-## 七、常见问题
+## 7. Troubleshooting
 
-| 现象 | 原因与处理 |
-|------|------------|
-| 双击 exe 后浏览器没弹出 | 稍等 2~5 秒（exe 要先解压自身）；若仍没反应，看 exe 同目录是否生成了 `start_error.log`。也可手动打开 <http://127.0.0.1:8791/> |
-| 杀毒软件报「可疑程序」或拦截 | 这是 PyInstaller 单文件 exe 常见的误报，加白名单即可；介意的话改用 `start.bat` 源码方式运行，功能一样 |
-| 日志长时间停在「正在启动 AutoCAD」 | 首次启动 AutoCAD 需要 30~60 秒，属正常；超过 2 分钟请手动打开一次 AutoCAD，确认能正常启动、没弹授权/许可证提示 |
-| 提示「没有找到 .dwg 文件」 | 检查路径；文件在子文件夹里要勾选「包含子文件夹」 |
-| 一个 DWG 有十几张图，却只出了两三张空白 PDF | 说明这些图排在模型空间里，但图框没被识别到。确认图框块名是 `A0`-`A4`（或图框尺寸是标准图幅×整数比例），也可以加 `--frames` 强制按图框拆 |
-| 拆出来的单张图内容被裁掉一点 | 图框的窗口范围就是图纸边界，画到框外的内容本来就不属于这张图；可在 CAD 里检查该图框 |
-| 个别图纸失败：没有生成 PDF | 程序会自动换 `DWG To PDF.pc3` 再试一轮（v1.1 起已修复「某些图纸静默失败」的问题）。若仍失败，说明该布局确实是空的，或页面设置里的打印设备在本机不存在且无法替代 |
-| 转换成功，但 PDF 里大片内容空白（表格框线在、字没有） | 图纸引用了本机没有的字体（探索者 `tssdeng.shx`、`hztxt.shx`、PKPM 等）。AutoCAD 算不出这些文字的范围，出图时整段跳过。v1.4 起会自动把缺失字体临时换成宋体+GB 大字体（只改内存、不动原图），日志会提示「已临时替换」 |
-| 中文变成问号或方框 | 图纸文字样式用的字体没有中文字形，属原图问题（CAD 里打印预览也一样），换字体即可 |
-| PDF 内容被裁掉一部分 | 该布局的打印区域是「窗口」，且窗口范围本身框得不准；程序会照原样还原，可先在 CAD 里把页面设置改成「布局」或重设窗口再转 |
-| 报「文件已打开」 | 该 DWG 正在 AutoCAD 里打开着，关掉再转 |
-| 报「无法打开 / 文件不存在」 | 文件被占用、损坏，或由更高版本 CAD 保存（需同版本或更高版本打开） |
-| 空布局也生成了 PDF | 布局本身是空白图纸，会输出一张空白页，属正常 |
-| 转换时每张 PDF 都被自动打开 | v1.2 起已修复：AutoCAD 前台出图后会按扩展名把结果「打开」一次，程序改为先写 `.part` 临时文件再改名，不再弹任何阅读器 |
-| 输出目录里出现 `.part` 文件 | 出图中途被强制中断留下的临时文件，删掉即可；同名重转会先清掉它 |
-| 想中断 | 界面上点「停止」，会在当前这张图纸出完后停下 |
+| Symptom | Cause / fix |
+|---------|-------------|
+| No browser window after double-clicking the exe | Wait 2–5 s (the exe unpacks itself first). If nothing happens, check for `start_error.log` next to the exe, or open <http://127.0.0.1:8791/> manually |
+| Antivirus flags it as suspicious | A common false positive for single-file PyInstaller builds — add an exclusion. If you would rather avoid it, run `start.bat` from source; identical functionality |
+| Log stuck at "starting AutoCAD" for a long time | The first AutoCAD launch takes 30–60 s. Beyond 2 minutes, open AutoCAD manually once and confirm it starts without licence dialogs |
+| "No .dwg files found" | Check the path; files in sub-folders require *Include sub-folders* |
+| A DWG with a dozen sheets produced only two or three blank PDFs | Those sheets are in model space but the frames were not recognised. Make sure frame blocks are named `A0`–`A4` (or their size equals a standard sheet × an integer scale), or force `--frames` |
+| A split sheet is slightly clipped | The frame window *is* the sheet boundary; anything drawn outside it never belonged to that sheet. Check the frame in CAD |
+| A single sheet failed and produced no PDF | The app retries with `DWG To PDF.pc3` automatically (fixed in v1.1). If it still fails, the layout is genuinely empty, or its plot device does not exist here and cannot be substituted |
+| Conversion succeeds but large parts of the PDF are blank (table borders present, no text) | The drawing references fonts that are not installed (e.g. `tssdeng.shx`, `hztxt.shx`, PKPM fonts). AutoCAD cannot measure that text and skips it. Since v1.4 missing fonts are temporarily substituted with SimSun + a GB big-font (in memory only); the log reports the substitution |
+| Chinese characters show as `?` or boxes | The text style's font has no CJK glyphs — a drawing issue (CAD's own plot preview shows the same). Change the font |
+| Part of the PDF is cut off | That layout's plot area is *Window* and the window is loose. The app reproduces it faithfully; reset the page setup to *Layout* (or redefine the window) in CAD and replot |
+| "File is already open" | The DWG is open in AutoCAD. Close it and replot |
+| "Cannot open / file not found" | File locked, corrupt, or saved by a newer CAD version (open it with the same or a newer version) |
+| An empty layout also produced a PDF | The layout really is blank; a blank page is correct |
+| Every PDF popped open in a reader while converting | Fixed in v1.2: the app writes a `.part` temp file and renames it, so no reader is launched |
+| `.part` files left in the output folder | Leftovers from a forced interruption — delete them. A re-run of the same sheet cleans them up |
+| Want to stop | Click *Stop*; the current sheet finishes first, then it stops |
 
-## 八、文件说明
+## 8. Files
 
-| 文件 | 作用 |
-|------|------|
-| `DWG2PDF.exe` | **打包好的可执行程序，双击即用，免安装、不需要 Python**（8.9 MB） |
-| `start.bat` | 源码方式启动：用本机 Python 运行下面这套程序 |
-| `dwg2pdf_ui.py` | 图形界面的本地服务（127.0.0.1，仅本机可访问） |
-| `ui.html` | 界面页面（可选文件、改前缀、看日志与进度） |
-| `dwg2pdf.py` | 核心程序：扫描 DWG、逐布局出图、命令行参数 |
-| `build_exe.bat` | 改完代码后重新打包 exe |
-| `app.ico` | 程序图标 |
-| `QUICKSTART.txt` | 便携版使用说明（随 exe 一起拷到别的电脑时看这份） |
-| `run.log` | 运行时自动生成的日志，记录页面载入、点击、异常（超过 512 KB 轮转为 `run.log.old`） |
-| `start_error.log` | 仅当启动异常时才会生成，里面有详细报错 |
+| File | Purpose |
+|------|---------|
+| `DWG2PDF.exe` | **Packaged executable — double-click to run, no install, no Python** (~9 MB) |
+| `start.bat` | Start from source with the local Python environment |
+| `dwg2pdf_ui.py` | Local GUI/HTTP service (127.0.0.1, reachable from this machine only) |
+| `ui.html` | The UI page (folder picking, prefix, log and progress) |
+| `dwg2pdf.py` | Core engine: scan DWGs, plot per layout/frame, CLI options |
+| `build_exe.bat` | Rebuild the exe after code changes |
+| `app.ico` | Application icon |
+| `QUICKSTART.txt` | Portable quick-start notes — read this when you copy the exe to another PC |
+| `run.log` | Runtime log generated automatically (page loads, clicks, exceptions); rotates to `run.log.old` above 512 KB |
+| `start_error.log` | Only created when start-up fails; contains the detailed traceback |
 
-结束程序：界面上点 **「退出程序」**（exe 版没有命令行窗口，就靠这个按钮退出）；
-用 `start.bat` 的话，直接关掉那个命令行窗口也可以。
+To exit: click **Exit** in the UI (the exe has no console window, so this button is the way out).
+With `start.bat` you can also just close the console window.
 
-## 九、版本记录
+## 9. Version history
 
-| 版本 | 说明 |
-|------|------|
-| v1.8 | 修复「图框识别出错：Call was rejected by callee」导致整份多图 DWG 只出一张：①多段线扫描原来每轮都重新问一次 `ss.Count`（每个实体一次 COM 调用，AutoCAD 一忙就在这里抛错，且不在 try 内、直接把整轮扫描打断），改为只取一次数量；②块参照/多段线/文字三处读取都改成「忙就等一会儿重试」，坏实体只跳过它自己；③识别失败会自动重试最多 3 次（间隔 2/4 秒），仍失败则在日志里明确提示「改为按图纸布局输出，可能只出一张」。实测 01建筑图 13 张全部输出，无报错 |
-| v1.7 | 修复勾选「输出保持目录结构」后点开始报 `Cannot set properties of null (setting 'className')`：状态栏更新时把里面那个小圆点也一起重写了，之后按 id 找不到它；改为只更新文字。另修复建筑图「图框识别卡几分钟不出声」：不再对每个块名都去翻块定义（匿名块动辄上千实体，扫一个要 10 秒），先按块名判断像不像图框，并每 100 个块/200 条多段线输出一次进度（实测 5 分钟卡死 → 23 秒识别 13 张） | 修复勾选「输出保持目录结构」后点开始报 `Cannot set properties of null (setting 'className')`：状态栏更新时把里面那个小圆点也一起重写了，之后按 id 找不到它；改为只更新文字。另修复建筑图「图框识别卡几分钟不出声」：不再对每个块名都去翻块定义（匿名块动辄上千实体，扫一个要 10 秒），先按块名判断像不像图框，并每 100 个块/200 条多段线输出一次进度（实测 5 分钟卡死 → 23 秒识别 13 张） |
-| v1.6 | 修复「点开始转换没反应、像卡死」：①开头三行日志被吞（页面游标用错），现在一点就能看到「待处理 N 个」；②后台异常不再静默断开，会以「后台处理出错：…」回到页面并写进 `run.log`；③1.5 秒没回应日志会提示「正在启动 AutoCAD」；④重复双击 exe 不再开第二个服务，只会打开新标签并复用后台；⑤页面每 5 秒自检，后台没了会顶部红条提示。另修冷启动时序：AutoCAD 刚起来时头几张图会报 `Open.Layouts`／`<unknown>.Item` 失败，现在会等它就绪并自动重试（冷启动实测 5/5 成功） |
-| v1.5 | 换掉系统自带的那个小号「选择文件夹」窗口：改为界面内自绘的文件夹选择器，窗口更大、字放大 30%，带常用位置/盘符快捷、路径可直接粘贴回车跳转，并显示当前文件夹里有几个 DWG |
-| v1.4 | 修复「转换成功但内容空白」：①按图框出图时先设窗口再切「窗口打印」（否则报输入无效）；②自动识别 A1 加长等非标准图幅；③自动替换本机缺失的 SHX 字体（不换就整段文字不打印）；④没设打印样式表时改用黑白样式，避免白字看不见 |
-| v1.3 | 支持「一个 DWG 里多张图纸」：模型空间里按图框拆分成多个 PDF，每张自动用 A0-A4 各自图幅，文件名取标题栏图名（布局为空的图才启用，已有布局的图不受影响） |
-| v1.2 | 修复「每转出一张 PDF 就自动弹开阅读器」：AutoCAD 前台出图结束会按扩展名把结果打开一次，现改为先写 `.part` 临时文件、完成后再改名成 `.pdf`，全程不弹窗；出图速度不变 |
-| v1.1 | 修复部分工程图纸「转换失败但无报错」的问题：出图时改为**显式指定打印设备名**（AutoCAD 在某些图纸上不传设备名会静默不生成文件），并在未生成文件时自动改用 `DWG To PDF.pc3` 再试。已用 3 张实际项目图纸（A0 幅面）验证通过 |
-| v1.0 | 首个版本：批量扫描、逐布局出图、前缀命名、同源去重、断点续转、图形界面与 exe 打包 |
+| Version | Notes |
+|---------|-------|
+| v1.8 | Fixed *"frame detection error: Call was rejected by callee"*, which reduced a multi-sheet DWG to a single PDF. ① The polyline scan re-read `ss.Count` on every iteration (one COM call per entity; AutoCAD could reject it while busy, and the call sat outside the `try`, aborting the whole scan) — the count is now read once. Block references, polylines and text reads now retry when AutoCAD is busy and skip only the bad entity. ② Detection retries up to 3 times (2 s / 4 s), and if it still fails the log states clearly that it falls back to layout plotting. Verified: all 13 architectural sheets plotted, no errors |
+| v1.7 | Fixed the `Cannot set properties of null (setting 'className')` error after ticking *Keep folder structure*: the status-bar refresh rewrote its inner dot, so the `id` lookup failed afterwards — now only the text node is updated. Also fixed frame detection hanging for minutes on architectural drawings: block definitions are no longer scanned for every block name (anonymous blocks can hold thousands of entities, ~10 s each); names are pre-filtered first, with progress every 100 blocks / 200 polylines (5-minute hang → 13 sheets detected in 23 s) |
+| v1.6 | Fixed *"clicking Start does nothing / looks frozen"*: ① the first three log lines were swallowed (wrong page cursor) — the pending-file count now appears immediately; ② background exceptions no longer close the connection silently but surface as an error line and are written to `run.log`; ③ after 1.5 s without a response the log says AutoCAD is starting; ④ a second double-click reuses the running service instead of starting another; ⑤ the page self-checks every 5 s and shows a red banner if the backend is gone. Also fixed cold-start timing: the first sheets could fail on `Open.Layouts` / `<unknown>.Item` while AutoCAD was still initialising — it now waits for readiness and retries (5/5 on a cold start) |
+| v1.5 | Replaced the tiny system folder dialog with an in-app picker: larger window, 30 % larger text, shortcuts for common locations and drives, paste-a-path-and-Enter navigation, and a live count of DWGs in the current folder |
+| v1.4 | Fixed *"conversion succeeds but the content is blank"*: ① set the window before switching to window-plot mode (otherwise: invalid input); ② recognise non-standard sheet sizes such as A1-extended; ③ substitute locally missing SHX fonts (otherwise whole text blocks are skipped); ④ fall back to a monochrome plot style so white text stays visible |
+| v1.3 | Multiple sheets per DWG: split model space by frame into several PDFs, each using its own A0–A4 paper size, filename from the title block (only when layouts are empty; drawings with layouts are untouched) |
+| v1.2 | Fixed *"a PDF reader pops up after every sheet"*: AutoCAD opens the plot result by extension; the app now writes a `.part` file and renames it when done — no pop-ups, same speed |
+| v1.1 | Fixed *"conversion fails silently"* on some project drawings: the plot device name is now passed **explicitly** (AutoCAD sometimes writes no file without it) and the app retries with `DWG To PDF.pc3` when no file appears. Verified on 3 real A0 project drawings |
+| v1.0 | First release: folder scan, per-layout plotting, prefix naming, duplicate handling, resume, GUI and exe packaging |
