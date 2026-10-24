@@ -11,13 +11,13 @@ if not exist "%PY%" (
 )
 
 echo Building single-file exe ...
-"%PY%" -m PyInstaller --noconfirm --onefile --noconsole --name "DWG批量转PDF" ^
+"%PY%" -m PyInstaller --noconfirm --onefile --noconsole --name "DWG2PDF" ^
     --icon "app.ico" --add-data "ui.html;." ^
     --distpath "dist" --workpath "build" --specpath "." dwg2pdf_ui.py
 
 if errorlevel 1 goto failed
 echo.
-echo Done: dist\DWG批量转PDF.exe
+echo Done: dist\DWG2PDF.exe
 echo Copy that file anywhere you like; it does not need Python.
 pause
 exit /b 0
