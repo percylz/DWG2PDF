@@ -307,9 +307,9 @@ def list_dir(raw: str) -> dict:
 # ----------------------------------------------------------------- HTTP 服务
 
 def _logfile(msg: str):
-    """把关键动作记到 exe 旁边的「运行日志.txt」，出问题时有据可查"""
+    """把关键动作记到 exe 旁边的「run.log」，出问题时有据可查"""
     try:
-        path = os.path.join(DATA_DIR, "运行日志.txt")
+        path = os.path.join(DATA_DIR, "run.log")
         if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
             os.replace(path, path + ".old")
         with open(path, "a", encoding="utf-8") as f:
@@ -532,7 +532,7 @@ if __name__ == "__main__":
         # 没有控制台时把错误写文件并弹窗，避免「点了没反应」
         detail = traceback.format_exc()
         try:
-            with open(os.path.join(DATA_DIR, "启动错误.txt"), "w", encoding="utf-8") as f:
+            with open(os.path.join(DATA_DIR, "start_error.log"), "w", encoding="utf-8") as f:
                 f.write(detail)
         except Exception:
             pass

@@ -1,6 +1,7 @@
 # ---- 程序运行产物 ----
-运行日志.txt
-运行日志.txt.old
+run.log
+run.log.old
+start_error.log
 *.pdf
 *.part
 
@@ -17,7 +18,7 @@ dist/
 *.spec
 *.manifest
 
-# ---- 便携包（由 exe + readme.txt 生成，见「build_exe.bat」） ----
+# ---- 便携包（由 exe + QUICKSTART.txt 生成，见「build_exe.bat」） ----
 *-便携版.zip
 *-portable.zip
 
