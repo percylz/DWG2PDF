@@ -330,7 +330,7 @@ async function ping(){
     if(r && r.ok){ banner(''); return true; }
   }catch(e){}
   banner('这个页面已经连不上程序后台了（多半是之前那次运行已退出，或是另一个实例的页面）。'
-       + '关闭本页，重新双击「DWG批量转PDF.exe」即可。', 'warn');
+       + '关闭本页，重新双击「DWG2PDF.exe」即可。', 'warn');
   return false;
 }
 
@@ -596,8 +596,8 @@ async function start(){
     clearTimeout(slow);
     setRunning(false); setStatus('就绪');
     logLine('× 无法连接本机服务：' + (e && e.message ? e.message : e));
-    banner('这个页面连不上程序后台（服务可能已经退出）。请重新双击「DWG批量转PDF.exe」。', 'warn');
-    alert('无法连接本机服务，请重新双击「DWG批量转PDF.exe」。');
+    banner('这个页面连不上程序后台（服务可能已经退出）。请重新双击「DWG2PDF.exe」。', 'warn');
+    alert('无法连接本机服务，请重新双击「DWG2PDF.exe」。');
   }
 }
 
@@ -680,7 +680,7 @@ async function poll(){
     }
   }catch(e){
     banner('这个页面连不上程序后台（服务可能未启动或已退出）。'
-         + '请重新双击「DWG批量转PDF.exe」。', 'warn');
+         + '请重新双击「DWG2PDF.exe」。', 'warn');
   }
 })();
 </script>
