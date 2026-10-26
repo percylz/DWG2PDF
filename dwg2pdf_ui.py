@@ -39,7 +39,7 @@ DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
 
 # 版本号：启动时写进 run.log，/api/ping 也会返回，
 # 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 
 
 # ----------------------------------------------------------------- 全局状态
@@ -129,7 +129,7 @@ class Hub:
             prefix=cfg.get("prefix") or "",
             include_model=bool(cfg.get("include_model", False)),
             recursive=bool(cfg.get("recursive", True)),
-            keep_subdir=bool(cfg.get("keep_subdir", False)),
+            keep_subdir=bool(cfg.get("keep_subdir", True)),
             skip_existing=bool(cfg.get("skip_existing", False)),
             on_event=self._on_event,
             cancel=self.cancel_event.is_set,

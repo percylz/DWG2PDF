@@ -60,6 +60,7 @@
   button.primary:hover:not(:disabled){background:var(--accent-dark);border-color:var(--accent-dark);}
   button.danger{color:var(--err);border-color:#f3c6c6;}
   button.danger:hover:not(:disabled){background:#fef2f2;border-color:#f0b0b0;}
+  button.ghost{color:var(--muted);padding:0 12px;background:#fbfcfd;}
   .hint{color:var(--muted);font-size:12.5px;line-height:1.7;}
   .hint code{
     background:#f1f5f9;border-radius:5px;padding:1px 6px;
@@ -215,8 +216,9 @@
 
     <div class="row">
       <label>PDF 输出文件夹</label>
-      <input type="text" id="out" placeholder="留空则输出到「DWG 所在文件夹\PDF」">
+      <input type="text" id="out" placeholder="选择上面的文件夹后自动填「该文件夹\PDF」">
       <button onclick="browse('out', this)">选择…</button>
+      <button class="ghost" onclick="resetOut()" title="回到「DWG 所在文件夹\PDF」">默认</button>
     </div>
 
     <div class="row">
@@ -239,7 +241,7 @@
       <label>选项</label>
       <div class="checks">
         <label><input type="checkbox" id="recursive" checked> 包含子文件夹</label>
-        <label><input type="checkbox" id="keep_subdir"> 输出保持目录结构</label>
+        <label><input type="checkbox" id="keep_subdir" checked> 输出保持目录结构</label>
         <label><input type="checkbox" id="include_model"> 同时导出模型空间</label>
         <label><input type="checkbox" id="skip_existing"> 跳过已生成的 PDF</label>
         <label><input type="checkbox" id="frames" checked> 多图纸按图框拆分（A0-A4）</label>
@@ -324,6 +326,35 @@
 <script>
 const $ = id => document.getElementById(id);
 let cursor = 0, timer = null, running = false, totalFiles = 0;
+/* outAuto=true 表示「PDF 输出文件夹」还跟着 DWG 文件夹走；用户手动指定过就变 false */
+let outAuto = true;
+
+/* 默认输出目录：DWG 所在文件夹下的 PDF 子文件夹（程序会自动新建） */
+function defaultOut(src){
+  let s = (src || '').trim().replace(/[\\\/]+$/, '');
+  if(!s) return '';
+  if(/\.dwg$/i.test(s)) s = s.replace(/[\\\/][^\\\/]*$/, '');
+  return s ? s + '\\PDF' : '';
+}
+
+function syncOut(){
+  const el = $('out');
+  if(!el) return;
+  const def = defaultOut($('src').value);
+  if(outAuto){
+    el.value = def;
+    el.placeholder = def || '选择上面的文件夹后自动填「该文件夹\\PDF」';
+  }else if(!el.value.trim()){
+    el.placeholder = def || '选择上面的文件夹后自动填「该文件夹\\PDF」';
+  }
+}
+
+function resetOut(){
+  if(running) return;
+  outAuto = true;
+  syncOut();
+  setStatus('输出文件夹已回到默认：' + (defaultOut($('src').value) || 'DWG 所在文件夹\\PDF'));
+}
 
 /* ---------- 出错要说出来（不能悄悄没反应） ---------- */
 function banner(msg, kind){
@@ -451,8 +482,10 @@ function pkOk(){
   const p = pk.sel || $('pkPath').value.trim();
   if(!p){ $('pkTip').innerHTML = '<b>请先选中一个文件夹</b>'; return; }
   $(pk.kind).value = p;
-  if(pk.kind === 'src' && !$('out').value.trim()){
-    $('out').value = p.replace(/[\\\/]+$/,'') + '\\PDF';
+  if(pk.kind === 'src'){
+    syncOut();                    // 输出目录跟着 DWG 文件夹走（用户手动指定过则不动）
+  }else{
+    outAuto = false;
   }
   pkClose();
   if(!running) setStatus('已选择：' + p);
@@ -706,6 +739,12 @@ async function poll(){
 (async function init(){
   $('prefix').addEventListener('input', prefixHint);
   prefixHint();
+  /* DWG 文件夹一变，默认输出目录跟着变；手动改过输出目录就不再跟随 */
+  $('src').addEventListener('input', syncOut);
+  $('out').addEventListener('input', () => {
+    outAuto = !$('out').value.trim();
+  });
+  syncOut();
   ping();
   syncNameHint();
   setInterval(ping, 5000);            // 后台一旦没了，页面立刻提示

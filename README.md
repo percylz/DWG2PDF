@@ -17,7 +17,9 @@ English | [简体中文](README.zh-CN.md)
 Double-click **`DWG2PDF.exe`** — your browser opens the control page:
 
 1. Pick the **folder that contains your DWGs** (sub-folders are included by default);
-2. Pick the **output folder** (leave empty → `DWG folder\PDF`);
+2. Ignore the **output folder** field: once step 1 is done it is filled in automatically as `<that folder>\PDF`,
+   and the `PDF` folder is created for you when the run starts. Point it somewhere else with *Browse*,
+   or press the **Default** button to go back to `<DWG folder>\PDF`;
 3. Choose **one PDF per DWG**:
    - **Merge into a single multi-page PDF** (default) — one page per sheet, named after the DWG;
    - **One PDF per sheet** — named after the sheet;
@@ -78,7 +80,7 @@ python dwg2pdf.py -s "D:\Projects\Architecture\Building-A.dwg" -o "D:\Plot\PDF"
 | `--frames` | Force frame-based splitting in model space (one PDF per A0–A4 frame). |
 | `--layouts` | Layouts only, never split by frame. |
 | `--no-recursive` | Top level only, ignore sub-folders. |
-| `--keep-subdir` | Mirror the source folder structure under the output folder. |
+| `--keep-subdir` | Mirror the source folder structure under the output folder (the GUI ticks this by default; the CLI keeps it opt-in). |
 | `--skip-existing` | Skip PDFs that already exist (resume an interrupted run). |
 | `--pc3` | Force a plot device. Default `DWG To PDF.pc3`. |
 | `--one-pdf` | One multi-page PDF per DWG (the default; may be omitted). |
@@ -160,7 +162,7 @@ Before merging, every sheet is classified:
 | Prefix `A-` | `A-Ground Floor.pdf` |
 | Same sheet name in different DWGs | `Ground Floor.pdf` + `Ground Floor - Structure-B.pdf` (source name appended, no overwrite) |
 | Want the source name too | `-t "{prefix}{dwg}-{layout}"` → `A-Structure-B-Ground Floor.pdf` |
-| *Keep folder structure* ticked | Output mirrors the source tree, so identical names never collide |
+| *Keep folder structure* ticked (on by default since v2.1.0) | Output mirrors the source tree, so identical names never collide |
 
 Illegal filename characters (`\ / : * ? " < > |`) are replaced with `_`.
 
@@ -240,6 +242,7 @@ With `start.bat` you can also just close the console window.
 | Version | Notes |
 |---------|-------|
 | v2.0 | ① **Selectable output layout**: the UI gained *one DWG →* with two choices — **merge into one multi-page PDF** (one page per sheet) or **one PDF per sheet**. In merge mode the file is named after the DWG, page order follows sheet order, and every page keeps its own paper size (mixed A0/A1/A3 stays mixed). CLI: `--one-pdf` (default) / `--split`. Merging uses pypdf; if the merge fails the app falls back to one file per sheet, so no result is lost. ② **Default output folder renamed** `PDF输出` → `PDF` |
+| v2.1.0 | ①**The output folder now follows the DWG folder**: picking the DWG folder auto-fills the output as `<that folder>\PDF`, which is created on start. It keeps following when you switch folders (for a single-DWG input, the DWG's own folder is used). A manually chosen output folder is never overwritten — the new **Default** button restores `<DWG folder>\PDF`. ②**“Mirror the source folder structure” is now ticked by default**, so sheets with the same name in different sub-folders no longer land side by side |
 | v2.0.1 | **Page-order rule**: when merging, the **LAYOUT (arrangement) sheet is moved to page 1** and the **BOM sheet to page 2**, all other sheets keep their order. Classification uses the sheet name (layout name / title-block title) and then the text on that PDF page (`LAYOUT`/`LAYOU`/`布置图`, `BOM`/`BILL OF MATERIAL`/`物料清单`/`设备清单`); if a type matches more than once, or a page contains both keywords, the original order is kept and the log explains why. New UI checkbox (on by default) and `--no-page-order` to disable. Verified on `1-IP DDC-AC- ICT2.dwg`: `Panel Layout` stays on page 1, `BOM LIST` moves from page 6 to page 2 |
 | v1.9.1 | Fixed *"still broken after replacing the exe"*: the launcher only checked whether something was listening on port 8791 and, if so, opened a browser page pointing at it — so an **old process with old code** kept doing the actual work. The launcher now reads that instance's version: same version is reused, a different version is shut down and replaced. `run.log` starts with `程序启动 v1.9.1 (PID …, port …)` and the UI shows the version next to the title, so you can always tell which build is running. Verified with the packaged exe on `1-IP DDC-AC- ICT2.dwg`: 13 of 13 sheets, A4 landscape, 96 %×96 % coverage |
 | v1.9 | Fixed *"the PDF has the drawing squeezed into one corner, the rest blank, and edges cut off"*. Those drawings were set up for a non-PDF plot device (`Microsoft Print to PDF`, a real printer driver…). After switching to `DWG To PDF.pc3`, the old paper name (`A4`) does not exist there, so AutoCAD silently fell back to Letter portrait — and since the 1:100 scale is fixed, the sheet landed in a corner and got clipped. Now: ① paper is restored by **physical size**, not by name; ② the plot window is re-framed from the real paper-space content and **centred**, with the paper orientation following the drawing (a landscape sheet gets landscape paper instead of being forced in with a 90° rotation); ③ drawings that bleed to the paper edge automatically use the **full-bleed** media, otherwise DWG To PDF's 5/17 mm printable margins cut the edge strip (title box, sheet number). Scale is never changed. Measured on `1-IP DDC-AC- ICT2.dwg` (13 layouts): from "one corner only" to all 13 as A4 landscape at 96 %×96 % coverage with complete border and title block |
