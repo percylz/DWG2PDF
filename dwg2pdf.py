@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -938,26 +939,38 @@ class AcadPlotter:
 
     def _sheet_box(self, layout, paper):
         """
-        取「图框」范围。有些图在布局里放了两三个视口：
-        一个缩得很小、把整个模型都框进来的「总览」视口，尺寸比纸大得多；
-        真正要打印的是那个长宽比和纸张一致、面积最大的视口。
-        只有在**恰好一个**视口的长宽比和纸张吻合时才这么挑，
-        有两个以上都吻合（例如一张纸上并排两张图）就老老实实取并集，绝不乱裁。
+        取「图框」范围。布局里常常不止一个视口：
+        - 一个把整个模型都框进来的「总览」视口，面积是纸的好几倍；
+        - 一个局部放大用的小视口；
+        - 以及真正要打印的图框视口（长宽比≈纸张、面积≈纸张）。
+        拿并集当窗口，整张图就会被总览视口压成一小块，所以要先挑出图框：
+
+        1. 候选 = 长宽比与纸张吻合（±8%）、面积不小于纸张 5% 的视口；
+        2. 只有 1 个候选 → 就是它；
+        3. 多个候选 → 只留「面积在纸张 0.5~2 倍」的（一页真有多张图平铺时，
+           这几张都会落在这个区间，取它们的并集，绝不裁切）；
+        4. 一个都不落在区间里（图框偏小、总览偏大）→ 老实取全部候选的并集。
         """
         vps, other = self._pspace_parts(layout, paper)
         if len(vps) >= 2:
             pw, ph = paper
+            paper_area = pw * ph
             want = max(pw, ph) / min(pw, ph)
-            cands = []
-            for b in vps:
-                w, h = b[2] - b[0], b[3] - b[1]
-                if w <= 5 or h <= 5:
-                    continue
-                ar = max(w, h) / min(w, h)
-                if abs(ar - want) <= 0.08 * want:
-                    cands.append(b)
-            if len(cands) == 1:
-                return self._union([cands[0], other])
+            if paper_area > 0:
+                cands = []
+                for b in vps:
+                    w, h = b[2] - b[0], b[3] - b[1]
+                    if w <= 5 or h <= 5:
+                        continue
+                    ar = max(w, h) / min(w, h)
+                    if abs(ar - want) <= 0.08 * want and w * h >= 0.05 * paper_area:
+                        cands.append(b)
+                if len(cands) == 1:
+                    return self._union([cands[0], other])
+                if len(cands) >= 2:
+                    band = [b for b in cands
+                            if 0.5 * paper_area <= (b[2] - b[0]) * (b[3] - b[1]) <= 2.0 * paper_area]
+                    return self._union((band or cands) + [other])
         return self._union(vps + [other])
 
     def _restore_media(self, layout, orig_media: str, orig_paper) -> bool:
@@ -1032,13 +1045,21 @@ class AcadPlotter:
 
         pw0, ph0 = paper
         fits_first = self._fits_in(cw, ch, paper)
+        fill_first = (cw * ch / (pw0 * ph0)) if pw0 * ph0 else 0.0
         # 纸张方向跟着图走：图是横的就用横版纸，别再靠「旋转 90°」硬塞，
         # 那样图会被纸边裁掉一半（实测就是这么出的问题）。
-        # 内容按 1:1 正好铺满整张纸时用满幅无边距纸，否则普通纸的 5/17 mm
-        # 可打印边距会把纸边那一圈内容裁掉。
-        edge_to_edge = fits_first and cw * ch >= 0.75 * pw0 * ph0
+        # 用满幅无边距纸（full_bleed）的两种情况：
+        # - 内容按 1:1 就铺满整张纸（≥75%）：普通纸 5/17 mm 的可打印边距会把纸边那圈内容裁掉；
+        # - 需要按图框缩放（内容比纸大、或图框只占纸的一小块）：既然要缩，就缩到纸边，
+        #   否则普通纸的边距会让整页四周留出一大圈白边（实测只剩 81%，看着就是「没铺满」）。
+        edge_to_edge = (fits_first and fill_first >= 0.75) or (not fits_first) or fill_first < 0.80
         media, mland, _exact = self._pick_media(layout, "", paper, cw >= ch,
                                                 allow_bleed=edge_to_edge)
+        if edge_to_edge and not _exact:
+            # 满幅纸里没有这个尺寸（非标纸幅、英制纸等）：退回普通纸，别硬凑一张别的尺寸
+            m2, l2, e2 = self._pick_media(layout, "", paper, cw >= ch, allow_bleed=False)
+            if e2:
+                media, mland, _exact = m2, l2, e2
         if media:
             try:
                 layout.CanonicalMediaName = media
@@ -1053,17 +1074,25 @@ class AcadPlotter:
         pw, ph = paper
 
         fits = self._fits_in(cw, ch, paper)
-        pad = 0.0
-        if fits and (max(cw, ch) + 2.0 <= max(pw, ph)
-                     and min(cw, ch) + 2.0 <= min(pw, ph)):
-            pad = 1.0                                   # 四周留 1mm，别把边框压在裁切线
+        # 图框占纸张的比例。正常图纸的图框≈纸张（实测 92%~100%）；
+        # 有的图图框比纸小一大截（例如 122x88 mm 的图框配 A4 纸，只占 17%），
+        # 那是页面设置和图纸对不上，1:1 出来就是「图缩在页面中间、四周一圈白边」。
+        # 这种就不再坚持 1:1，直接把图框铺满纸张。
+        fill = (cw * ch / (pw * ph)) if pw * ph else 0.0
+        keep_scale = fits and fill >= 0.80
+
+        # 窗口四周统一留 1mm：出图时图框线不会正好压在可打印区边界上（否则线会被裁掉一半）
+        pad = 1.0
+        if not keep_scale and not fits:
+            # 内容比纸大时这点余量没意义，反而让缩放的基数变模糊，干脆不留
+            pad = 0.0
 
         try:
             layout.SetWindowToPlot(self._double_array([box[0] - pad, box[1] - pad]),
                                    self._double_array([box[2] + pad, box[3] + pad]))
             layout.PlotType = 4                            # 4 = 窗口
             layout.CenterPlot = True
-            if fits:
+            if keep_scale:
                 layout.UseStandardScale = True
                 layout.StandardScale = 16                  # 1:1
                 if not getattr(self, "_fit_noted", False):
@@ -1073,9 +1102,14 @@ class AcadPlotter:
             else:
                 layout.UseStandardScale = True
                 layout.StandardScale = 0                   # 0 = 布满图纸
-                self.log(f"    · 图纸内容 {round(cw)}x{round(ch)} mm 比纸张 "
-                         f"{round(pw)}x{round(ph)} mm 大，已按「布满图纸」缩放到本页"
-                         f"（整张图完整、不裁切）")
+                if fits:
+                    self.log(f"    · 图框只有 {round(cw)}x{round(ch)} mm，仅占 "
+                             f"{round(pw)}x{round(ph)} mm 纸张的 {fill * 100:.0f}%（页面设置"
+                             f"与图纸不匹配），已按图框铺满本页")
+                else:
+                    self.log(f"    · 图纸内容 {round(cw)}x{round(ch)} mm 比纸张 "
+                             f"{round(pw)}x{round(ph)} mm 大，已按「布满图纸」缩放到本页"
+                             f"（整张图完整、不裁切）")
         except Exception as exc:                           # noqa: BLE001
             self.log(f"    · 按图纸内容重设窗口失败，仍按原页面设置出图：{exc}")
 
