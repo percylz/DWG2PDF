@@ -658,12 +658,15 @@ class AcadPlotter:
         except ValueError:
             return None
 
-    def _pick_media(self, layout, paper: str, paper_mm, want_landscape: bool):
+    def _pick_media(self, layout, paper: str, paper_mm, want_landscape: bool,
+                    allow_bleed: bool = False):
         """
         按图纸的实际毫米尺寸挑纸张：
         1) 有完全一致的纸张就直接用（A0-A4 都能命中）；
         2) 没有（例如 A1 加长 1051x594）就找短边一致的纸张，按缩放输出；
         3) 实在没有就按图幅名前缀找.
+        allow_bleed=True 时优先用「满幅无边距」（full_bleed）纸：图纸画到纸边时，
+        普通纸的可打印边距（实测 DWG To PDF 是 5/17mm）会把边上的内容裁掉。
         返回 (纸张名, 是否横版, 是否尺寸完全一致)。
         """
         try:
@@ -671,6 +674,10 @@ class AcadPlotter:
         except Exception:
             return "", None, False
         pool = [n for n in names if "FULL_BLEED" not in n.upper()] or names
+        if allow_bleed:
+            bleed = [n for n in names if "FULL_BLEED" in n.upper()]
+            if bleed:
+                pool = bleed
         pool = [n for n in pool if self._media_size(n)]
 
         target = paper_mm
@@ -703,6 +710,140 @@ class AcadPlotter:
             pick = same[0] if same else cands[0]
             return pick, self._media_landscape(pick), False
         return "", None, False
+
+    # -------------------------------------------------- 布局页面设置修复
+
+    def _paper_size_mm(self, layout):
+        """当前打印设备下这张纸的物理尺寸（毫米）"""
+        try:
+            w, h = layout.GetPaperSize()
+            w, h = float(w), float(h)
+            if w > 10 and h > 10:
+                return (w, h)
+        except Exception:
+            pass
+        return None
+
+    def _pspace_box(self, layout, paper):
+        """
+        图纸空间里「真正画在纸上」的内容范围（毫米）。
+        比纸大好几倍的对象直接忽略——那多半是跑出纸外的视口框或残留图形，
+        拿它当窗口就会把整张图缩成一个小角。
+        """
+        pw, ph = paper
+        limit = pw * ph * 4.0
+        box = None
+        total = com_get(lambda: layout.Block.Count, 0)
+        for i in range(total):
+            def read(i=i):
+                e = layout.Block.Item(i)
+                mn, mx = e.GetBoundingBox()
+                return (min(mn[0], mx[0]), min(mn[1], mx[1]),
+                        max(mn[0], mx[0]), max(mn[1], mx[1]))
+            b = com_get(read, None)
+            if not b:
+                continue
+            if (b[2] - b[0]) * (b[3] - b[1]) > limit:
+                continue
+            box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]),
+                                         max(box[2], b[2]), max(box[3], b[3]))
+        return box
+
+    def _restore_media(self, layout, orig_media: str, orig_paper) -> bool:
+        """
+        换完打印设备后把纸张还原回去，返回「是否精确还原」。
+        1) 先按原纸名试（两个设备都有同名纸时最准）；
+        2) 名字对不上（打印机驱动的 "A4" 在 DWG To PDF 里没有）就按物理尺寸找同规格。
+        """
+        if orig_media:
+            try:
+                layout.CanonicalMediaName = orig_media
+            except Exception:
+                pass
+            try:
+                now = str(layout.CanonicalMediaName or "")
+            except Exception:
+                now = ""
+            if now and now.strip().upper() == orig_media.strip().upper():
+                return True
+        if not orig_paper:
+            return False
+        want_land = orig_paper[0] >= orig_paper[1]
+        media, _land, exact = self._pick_media(layout, "", orig_paper, want_land)
+        if media:
+            try:
+                layout.CanonicalMediaName = media
+            except Exception:
+                pass
+            if not exact:
+                self.log(f"    · 没找到 {round(orig_paper[0])}x{round(orig_paper[1])} mm 的纸，"
+                         f"改用 {media}")
+            return exact
+        return False
+
+    def _fit_layout_to_page(self, layout) -> None:
+        """
+        页面设置没法照搬时（原打印设备是打印机驱动，纸名在 DWG To PDF 里不存在，
+        会被换成 Letter 一类的默认纸），按图纸空间里真实的内容重新框定窗口：
+        纸张方向跟着图走、窗口取纸内内容、居中、比例不变，
+        避免出现「图只占一个角、其余大片空白」或「图被纸边裁掉」。
+        """
+        try:
+            if str(layout.Name).strip().lower() == MODEL_LAYOUT:
+                return                       # 模型空间没有「纸内纸外」之分，不改
+        except Exception:
+            pass
+        paper = self._paper_size_mm(layout)
+        if not paper:
+            return
+        box = self._pspace_box(layout, paper)
+        if not box:
+            return
+        cw, ch = box[2] - box[0], box[3] - box[1]
+        if cw <= 5 or ch <= 5:
+            return
+
+        # 纸张方向跟着图走：图是横的就用横版纸，别再靠「旋转 90°」硬塞，
+        # 那样图会被纸边裁掉一半（实测就是这么出的问题）。
+        # 图是画到纸边的（内容几乎占满整张纸）时，用满幅无边距纸，
+        # 否则本机打印设备的可打印边距会把纸边那一圈内容裁掉。
+        edge_to_edge = cw * ch >= 0.75 * paper[0] * paper[1]
+        media, mland, _exact = self._pick_media(layout, "", paper, cw >= ch,
+                                                allow_bleed=edge_to_edge)
+        if media:
+            try:
+                layout.CanonicalMediaName = media
+            except Exception:
+                pass
+            paper = self._paper_size_mm(layout) or paper
+        if mland is not None:
+            try:
+                layout.PlotRotation = 0
+            except Exception:
+                pass
+        pw, ph = paper
+
+        # 窗口取「纸内的那部分内容」：跑到纸外的对象（超尺寸视口、遗留图形）
+        # 本来也印不出来，但如果拿它们当窗口，整张图就会被压成中间一小块。
+        x0, y0 = max(box[0], 0.0), max(box[1], 0.0)
+        x1, y1 = min(box[2], pw), min(box[3], ph)
+        if x1 - x0 <= 5 or y1 - y0 <= 5:
+            return
+        if (x1 - x0) * (y1 - y0) < 0.02 * pw * ph:
+            return                             # 纸内几乎没东西，别乱改
+
+        try:
+            layout.SetWindowToPlot(self._double_array([x0, y0]),
+                                   self._double_array([x1, y1]))
+            layout.PlotType = 4                            # 4 = 窗口
+            layout.CenterPlot = True
+            # 比例一律不动：工程图纸的比例是硬要求，宁可留白也不擅自缩放
+            if not getattr(self, "_fit_noted", False):
+                self._fit_noted = True
+                self.log("    · 原打印设备不是 PDF 设备，页面设置已按图纸内容重新框定并居中"
+                         "（比例不变）")
+        except Exception as exc:                           # noqa: BLE001
+            self.log(f"    · 按图纸内容重设窗口失败，仍按原页面设置出图：{exc}")
 
     def _plot_sheet(self, doc, sheet: dict, pdf_path: str) -> None:
         """把模型空间里的一张图（按图框窗口 + 对应图幅）打印成一个 PDF"""
@@ -819,18 +960,17 @@ class AcadPlotter:
             orig_media = str(layout.CanonicalMediaName or "")
         except Exception:
             orig_media = ""
+        # 纸张尺寸（毫米）必须趁还没换设备先取：换完设备就是这个设备的默认纸了
+        orig_paper = self._paper_size_mm(layout)
 
         def switch_to_pdf_device():
             try:
                 layout.ConfigName = self.pc3
             except Exception:
                 pass
-            # 原来的纸张（如 ISO A0）在 DWG To PDF 里一般也有同名规格，试着还原
-            if orig_media:
-                try:
-                    layout.CanonicalMediaName = orig_media
-                except Exception:
-                    pass
+            # 原来的纸张（如 ISO A0）在 DWG To PDF 里一般也有同名规格，试着还原；
+            # 名字对不上（例如打印机驱动里的 "A4"）就按物理尺寸去找同一规格。
+            return self._restore_media(layout, orig_media, orig_paper)
 
         # 候选方案：先用图纸原设备（显式传名），不行再用 DWG To PDF.pc3
         plans: list[str] = []
@@ -844,7 +984,11 @@ class AcadPlotter:
         last_err = ""
         for cfg in plans:
             if cfg.strip().lower() != orig_cfg.strip().lower():
+                # 换了打印设备：先把纸张按原尺寸还原；换设备后原来的页面设置
+                # （尤其是「旋转」和可打印边距）含义会变，所以再按图纸内容
+                # 重新框一次窗口并居中，避免「图缩在一个角、其余大片空白」。
                 switch_to_pdf_device()
+                self._fit_layout_to_page(layout)
             try:
                 _remove_quietly(temp_path)
                 plot.PlotToFile(temp_path, cfg)     # ← 传设备名，且写临时扩展名
@@ -888,6 +1032,7 @@ class AcadPlotter:
         self._rect_cache = {}
         self._fonts_repaired = False
         self._font_cache = None
+        self._fit_noted = False
 
     def _targets(self, doc) -> list[dict]:
         """
