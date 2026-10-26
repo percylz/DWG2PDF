@@ -19,6 +19,9 @@
   .wrap{max-width:960px;margin:0 auto;}
   header{margin-bottom:18px;}
   h1{font-size:23px;margin:0 0 6px;font-weight:700;letter-spacing:.2px;}
+  h1 .ver{font-size:12px;font-weight:600;color:#64748b;background:#eef2f7;
+    border:1px solid #dbe3ec;border-radius:20px;padding:2px 9px;margin-left:8px;
+    vertical-align:3px;letter-spacing:.3px;}
   .sub{color:var(--muted);font-size:13px;}
   .card{
     background:var(--card);border:1px solid var(--border);border-radius:14px;
@@ -194,7 +197,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>DWG 批量转 PDF</h1>
+    <h1>DWG 批量转 PDF <span class="ver" id="ver"></span></h1>
     <div class="sub">把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>分别打印成一个 PDF，文件名默认用图纸名。</div>
   </header>
 
@@ -327,7 +330,12 @@ window.addEventListener('unhandledrejection', e => {
 async function ping(){
   try{
     const r = await fetch('/api/ping', {cache:'no-store'}).then(r => r.json());
-    if(r && r.ok){ banner(''); return true; }
+    if(r && r.ok){
+      banner('');
+      const v = $('ver');
+      if(v && r.version) v.textContent = 'v' + r.version;
+      return true;
+    }
   }catch(e){}
   banner('这个页面已经连不上程序后台了（多半是之前那次运行已退出，或是另一个实例的页面）。'
        + '关闭本页，重新双击「DWG2PDF.exe」即可。', 'warn');

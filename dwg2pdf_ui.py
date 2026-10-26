@@ -37,6 +37,10 @@ UI_FILE = os.path.join(BUNDLE, "ui.html")
 DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
     sys.executable if hasattr(sys, "executable") else HERE)
 
+# 版本号：启动时写进 run.log，/api/ping 也会返回，
+# 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
+APP_VERSION = "1.9.1"
+
 
 # ----------------------------------------------------------------- 全局状态
 
@@ -407,6 +411,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/ping":
             self._json({"ok": True, "app": "dwg2pdf", "pid": os.getpid(),
+                        "version": APP_VERSION,
                         "port": Handler.port, "running": HUB.running})
             return
 
@@ -467,18 +472,49 @@ def _shutdown():
     os._exit(0)
 
 
+def _instance_info(port: int) -> dict:
+    """问一下这个端口上跑的是不是本程序，是就返回它的信息（含版本号）"""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/ping", timeout=1.0) as resp:
+            data = json.loads(resp.read(600).decode("utf-8", "replace"))
+            if data.get("app") == "dwg2pdf":
+                return data
+    except Exception:
+        pass
+    return {}
+
+
 def _alive_instance(port_pref: int = 8791) -> int:
     """如果已经有本程序在跑，返回它的端口（避免开出第二个实例让页面搞混）"""
-    import urllib.request
     for port in range(port_pref, port_pref + 4):
-        try:
-            with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/api/ping", timeout=1.0) as resp:
-                if b'"dwg2pdf"' in resp.read(300):
-                    return port
-        except Exception:
-            continue
+        if _instance_info(port):
+            return port
     return 0
+
+
+def _close_instance(port: int, pid: int = 0) -> bool:
+    """让旧实例退出，返回端口是否已释放"""
+    import urllib.request
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/quit",
+                               timeout=2.0).read()
+    except Exception:
+        pass
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if not _instance_info(port):
+            return True
+        time.sleep(0.4)
+    if pid:                      # 兜底：请不动就直接结束那个进程
+        try:
+            os.kill(pid, 9)
+        except Exception:
+            pass
+        time.sleep(1.0)
+        return not _instance_info(port)
+    return False
 
 
 def main():
@@ -495,17 +531,29 @@ def main():
             pass
 
     # 已经有实例在跑？直接把浏览器指过去，不再开第二个（否则两个页面容易搞混）
+    # 但如果那个实例是旧版本（换了新 exe 却还连着老后台），先把它关掉再起新的，
+    # 否则新 exe 只是打开一个老页面，改了半天代码根本没用上。
     if "--new" not in args:
         alive = _alive_instance(port_pref)
         if alive:
-            url = f"http://127.0.0.1:{alive}/"
-            print(f"已有实例在运行：{url}")
-            if not no_open:
-                webbrowser.open(url)
-            return
+            info = _instance_info(alive)
+            old_ver = str(info.get("version") or "")
+            if old_ver == APP_VERSION:
+                url = f"http://127.0.0.1:{alive}/"
+                print(f"已有实例在运行：{url}")
+                _logfile(f"发现同版本实例 v{APP_VERSION}，直接复用：{url}")
+                if not no_open:
+                    webbrowser.open(url)
+                return
+            print(f"发现旧版本实例（v{old_ver or '未知'}），自动关闭后启动新版本…")
+            _logfile(f"发现旧版本实例（v{old_ver or '未知'}，PID {info.get('pid')}），"
+                     f"已关闭并启动 v{APP_VERSION}")
+            _close_instance(alive, int(info.get("pid") or 0))
+            port_pref = alive
 
     port = _free_port(port_pref)
     Handler.port = port
+    _logfile(f"程序启动 v{APP_VERSION}（PID {os.getpid()}，端口 {port}）")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"服务已启动：{url}")
