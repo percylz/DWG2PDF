@@ -71,6 +71,8 @@
     cursor:pointer;user-select:none;
   }
   .checks input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;}
+  .radios{flex-direction:column;gap:9px;}
+  .radios label{font-size:13.5px;}
   .actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
   .actions .spacer{flex:1;}
   .bar-wrap{
@@ -198,7 +200,7 @@
 <div class="wrap">
   <header>
     <h1>DWG 批量转 PDF <span class="ver" id="ver"></span></h1>
-    <div class="sub">把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>分别打印成一个 PDF，文件名默认用图纸名。</div>
+    <div class="sub">把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>逐张出图，再<b>合并成一个多页 PDF</b>（默认），也可以改成每张图纸各一个 PDF。</div>
   </header>
 
   <div class="banner" id="banner" style="display:none"></div>
@@ -213,7 +215,7 @@
 
     <div class="row">
       <label>PDF 输出文件夹</label>
-      <input type="text" id="out" placeholder="留空则输出到「DWG 所在文件夹\PDF输出」">
+      <input type="text" id="out" placeholder="留空则输出到「DWG 所在文件夹\PDF」">
       <button onclick="browse('out', this)">选择…</button>
     </div>
 
@@ -221,6 +223,16 @@
       <label>文件名前缀</label>
       <input type="text" id="prefix" placeholder="可留空；例如填 A-" style="max-width:280px">
       <div class="hint" id="nameHint">命名示例：<code>一层平面图.pdf</code></div>
+    </div>
+
+    <div class="row">
+      <label>一个 DWG 的输出</label>
+      <div class="checks radios">
+        <label><input type="radio" name="one_pdf" value="1" checked onchange="syncNameHint()">
+          合并成 1 个 PDF（多页，每页一张图纸）</label>
+        <label><input type="radio" name="one_pdf" value="0" onchange="syncNameHint()">
+          每张图纸各出 1 个 PDF（原来是这种方式）</label>
+      </div>
     </div>
 
     <div class="row">
@@ -236,6 +248,8 @@
     </div>
 
     <div class="hint" style="margin-top:14px">
+      选「合并成 1 个 PDF」时，文件名取 DWG 的文件名（可加前缀），页序就是图纸顺序，
+      一个 13 张图的 DWG 只出一个 13 页的 PDF；选「每张图纸各出 1 个 PDF」时，文件名取图纸名。<br>
       同一文件夹里不同 DWG 出现同名图纸时，会自动补上源文件名区分，例如
       <code>一层平面图 - 结构B.pdf</code>，不会互相覆盖。<br>
       勾选「多图纸按图框拆分」时，若图纸布局是空的、所有图都排在一张模型空间里，
@@ -434,7 +448,7 @@ function pkOk(){
   if(!p){ $('pkTip').innerHTML = '<b>请先选中一个文件夹</b>'; return; }
   $(pk.kind).value = p;
   if(pk.kind === 'src' && !$('out').value.trim()){
-    $('out').value = p.replace(/[\\\/]+$/,'') + '\\PDF输出';
+    $('out').value = p.replace(/[\\\/]+$/,'') + '\\PDF';
   }
   pkClose();
   if(!running) setStatus('已选择：' + p);
@@ -551,9 +565,21 @@ $('pkMask').addEventListener('mousedown', e => {
 });
 
 
+function mergedMode(){
+  const el = document.querySelector('input[name=one_pdf]:checked');
+  return !el || el.value === '1';
+}
+
 function prefixHint(){
   const p = $('prefix').value;
-  $('nameHint').innerHTML = '命名示例：<code>' + (p || '') + '一层平面图.pdf</code>';
+  const ex = mergedMode() ? '某图纸.pdf（用 DWG 的文件名）' : '一层平面图.pdf（用图纸名）';
+  $('nameHint').innerHTML = '命名示例：<code>' + (p || '') + ex + '</code>';
+}
+
+function syncNameHint(){
+  if($('prefix').value) prefixHint();
+  else $('nameHint').innerHTML = '命名示例：<code>'
+    + (mergedMode() ? '某图纸.pdf（用 DWG 的文件名）' : '一层平面图.pdf（用图纸名）') + '</code>';
 }
 
 async function start(){
@@ -567,6 +593,7 @@ async function start(){
     skip_existing: $('skip_existing').checked,
     keep_acad: $('keep_acad').checked,
     frames_mode: $('frames').checked ? 'auto' : 'layouts',
+    one_pdf: mergedMode(),
   };
   if(!cfg.src){ alert('请先选择 DWG 所在文件夹'); return; }
 
@@ -675,6 +702,7 @@ async function poll(){
   $('prefix').addEventListener('input', prefixHint);
   prefixHint();
   ping();
+  syncNameHint();
   setInterval(ping, 5000);            // 后台一旦没了，页面立刻提示
   try{
     const d = await fetch('/api/poll?after=0').then(r => r.json());

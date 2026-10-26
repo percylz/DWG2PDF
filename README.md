@@ -17,9 +17,12 @@ English | [简体中文](README.zh-CN.md)
 Double-click **`DWG2PDF.exe`** — your browser opens the control page:
 
 1. Pick the **folder that contains your DWGs** (sub-folders are included by default);
-2. Pick the **output folder** (leave empty → `DWG folder\PDF输出`);
-3. Optionally set a **filename prefix**, e.g. `A-`;
-4. Click **Start** and watch the log. When it finishes, open the output folder directly from the page.
+2. Pick the **output folder** (leave empty → `DWG folder\PDF`);
+3. Choose **one PDF per DWG**:
+   - **Merge into a single multi-page PDF** (default) — one page per sheet, named after the DWG;
+   - **One PDF per sheet** — named after the sheet;
+4. Optionally set a **filename prefix**, e.g. `A-`;
+5. Click **Start** and watch the log. When it finishes, open the output folder directly from the page.
 
 > The *Browse* button opens the app's own folder picker (large window, large text).
 > Left side: common locations and drive letters. Middle: double-click to enter a folder, single click to select.
@@ -70,6 +73,8 @@ python dwg2pdf.py -s "D:\Projects\Architecture\Building-A.dwg" -o "D:\Plot\PDF"
 | `--keep-subdir` | Mirror the source folder structure under the output folder. |
 | `--skip-existing` | Skip PDFs that already exist (resume an interrupted run). |
 | `--pc3` | Force a plot device. Default `DWG To PDF.pc3`. |
+| `--one-pdf` | One multi-page PDF per DWG (the default; may be omitted). |
+| `--split` | One PDF per sheet (the behaviour before v2.0). |
 | `--dry-run` | List the files that would be produced; plot nothing. |
 | `--check` | Only check that AutoCAD is reachable and count the DWGs. |
 | `--keep-acad` | Keep the AutoCAD process alive after conversion (faster next start). |
@@ -80,26 +85,45 @@ Exit codes: `0` all succeeded, `2` some files failed, `3` environment/runtime er
 
 ## 3. When one DWG holds several sheets
 
-Two cases; the app decides automatically.
+Two cases; the app decides automatically, and the **one PDF per DWG** switch decides how they are packed:
 
-**1) Sheets live on layouts** → one PDF per layout, named after the layout (classic behaviour).
+| Setting | Result | Filename |
+|---------|--------|----------|
+| **Merge into one PDF** (default) | One DWG → **one multi-page PDF**, one page per sheet, page order = sheet order, each page keeps its own paper size (mixed A0/A1/A3 is fine) | the **DWG name** (prefix supported) |
+| **One PDF per sheet** (old behaviour) | One DWG → N single-page PDFs | the **sheet name** (layout or title-block title) |
 
-**2) Everything is drawn in model space** (no usable layout) → the app splits by **title-block frame**, one PDF per frame:
+**1) Sheets live on layouts** → plotted layout by layout, then merged or kept separate as chosen.
+
+**2) Everything is drawn in model space** (no usable layout) → the app splits by **title-block frame**,
+each frame counting as one sheet (one page of the merged PDF):
 
 - Detection: frames are blocks named `A0 / A1 / A2 / A3 / A4` (the largest closed rectangle inside the block is the frame).
   Without such names it falls back to rectangles whose size equals a standard sheet size × a common scale
   (e.g. 118900 × 84100 = A0 at 1:100).
 - **Each PDF uses that sheet's own paper size** (A0 / A1 / A2 …), plotted by window with *fit to paper*,
   so a 1:100 drawing stays at 1:100 instead of being squeezed onto one common sheet size.
-- **The filename comes from the title in that sheet's title block** (e.g. `Power Plan L1`); if unavailable it falls back to
-  the drawing number (e.g. `FD-12`), then to `Sheet01`.
+- **The sheet name comes from the title in that sheet's title block** (e.g. `Power Plan L1`); if unavailable it falls back to
+  the drawing number (e.g. `FD-12`), then to `Sheet01`. In merge mode these names appear in the log as `第 n/m 张：…`.
 - Frame splitting only kicks in when *all layouts are empty*, so drawings that already have layouts are never changed.
   Force it with `--frames`; force layout-only with `--layouts`.
 
-Measured sample (`<data-centre>---electrical.dwg`): 16 sheets in model space (5×A0, 9×A1, 2×A2) →
-16 PDFs at 1189×841, 841×594 and 594×420 mm, every filename taken from the drawing title.
+Measured sample 1 (`<data-centre>---electrical.dwg`): 16 sheets in model space (5×A0, 9×A1, 2×A2) →
+in merge mode one 16-page PDF whose pages are 1189×841, 841×594 and 594×420 mm.
+
+Measured sample 2 (`1-IP DDC-AC- ICT2.dwg`, 13 layouts, all A4 landscape):
+merge mode → one `1-IP DDC-AC- ICT2.pdf` (13 pages, 5.2 MB); split mode → 13 files `布局1.pdf` … `布局13.pdf`.
 
 ## 4. Naming rules
+
+**Merged (one PDF per DWG)** — the filename comes from the DWG:
+
+| Case | Result |
+|------|--------|
+| Empty prefix | `1-IP DDC-AC- ICT2.pdf` |
+| Prefix `A-` | `A-1-IP DDC-AC- ICT2.pdf` |
+| A PDF with that name already exists | `Drawing (2).pdf` |
+
+**One PDF per sheet** — the filename comes from the sheet:
 
 | Case | Result |
 |------|--------|
@@ -130,7 +154,7 @@ Illegal filename characters (`\ / : * ? " < > |`) are replaced with `_`.
 |------|-------------|
 | OS | Windows (developed on Windows 10/11) |
 | CAD | AutoCAD 2013 or newer, **able to start normally and licensed** (developed against AutoCAD 2024). AutoCAD LT and other CAD apps (ZWCAD, GstarCAD…) are not supported — they expose no automation API |
-| Python | **Not needed with the exe.** Source mode needs Python 3.9+ with `pywin32` |
+| Python | **Not needed with the exe.** Source mode needs Python 3.9+ with `pywin32` and `pypdf` |
 
 To run it on another PC, just copy `DWG2PDF.exe` (that PC still needs AutoCAD).
 
@@ -158,13 +182,15 @@ copy it back over the one in this folder. Rebuilding needs Python plus `pip inst
 | An empty layout also produced a PDF | The layout really is blank; a blank page is correct |
 | Every PDF popped open in a reader while converting | Fixed in v1.2: the app writes a `.part` temp file and renames it, so no reader is launched |
 | `.part` files left in the output folder | Leftovers from a forced interruption — delete them. A re-run of the same sheet cleans them up |
+| Merging into one PDF fails | It falls back to one file per sheet — nothing is lost. The log shows `！合并成一个 PDF 失败：…`. Usual cause: `pypdf` missing in source mode (`pip install pypdf`) |
+| Page order is not what I expected | Page order = sheet order (the layout tab order, left to right in AutoCAD); names are not sorted. If a DWG's tabs are `布局1, 布局10, 布局11 …`, the merged PDF follows that order too |
 | Want to stop | Click *Stop*; the current sheet finishes first, then it stops |
 
 ## 8. Files
 
 | File | Purpose |
 |------|---------|
-| `DWG2PDF.exe` | **Packaged executable — double-click to run, no install, no Python** (~9 MB) |
+| `DWG2PDF.exe` | **Packaged executable — double-click to run, no install, no Python** (~10.6 MB) |
 | `start.bat` | Start from source with the local Python environment |
 | `dwg2pdf_ui.py` | Local GUI/HTTP service (127.0.0.1, reachable from this machine only) |
 | `ui.html` | The UI page (folder picking, prefix, log and progress) |
@@ -182,6 +208,7 @@ With `start.bat` you can also just close the console window.
 
 | Version | Notes |
 |---------|-------|
+| v2.0 | ① **Selectable output layout**: the UI gained *one DWG →* with two choices — **merge into one multi-page PDF** (one page per sheet) or **one PDF per sheet**. In merge mode the file is named after the DWG, page order follows sheet order, and every page keeps its own paper size (mixed A0/A1/A3 stays mixed). CLI: `--one-pdf` (default) / `--split`. Merging uses pypdf; if the merge fails the app falls back to one file per sheet, so no result is lost. ② **Default output folder renamed** `PDF输出` → `PDF` |
 | v1.9.1 | Fixed *"still broken after replacing the exe"*: the launcher only checked whether something was listening on port 8791 and, if so, opened a browser page pointing at it — so an **old process with old code** kept doing the actual work. The launcher now reads that instance's version: same version is reused, a different version is shut down and replaced. `run.log` starts with `程序启动 v1.9.1 (PID …, port …)` and the UI shows the version next to the title, so you can always tell which build is running. Verified with the packaged exe on `1-IP DDC-AC- ICT2.dwg`: 13 of 13 sheets, A4 landscape, 96 %×96 % coverage |
 | v1.9 | Fixed *"the PDF has the drawing squeezed into one corner, the rest blank, and edges cut off"*. Those drawings were set up for a non-PDF plot device (`Microsoft Print to PDF`, a real printer driver…). After switching to `DWG To PDF.pc3`, the old paper name (`A4`) does not exist there, so AutoCAD silently fell back to Letter portrait — and since the 1:100 scale is fixed, the sheet landed in a corner and got clipped. Now: ① paper is restored by **physical size**, not by name; ② the plot window is re-framed from the real paper-space content and **centred**, with the paper orientation following the drawing (a landscape sheet gets landscape paper instead of being forced in with a 90° rotation); ③ drawings that bleed to the paper edge automatically use the **full-bleed** media, otherwise DWG To PDF's 5/17 mm printable margins cut the edge strip (title box, sheet number). Scale is never changed. Measured on `1-IP DDC-AC- ICT2.dwg` (13 layouts): from "one corner only" to all 13 as A4 landscape at 96 %×96 % coverage with complete border and title block |
 | v1.8 | Fixed *"frame detection error: Call was rejected by callee"*, which reduced a multi-sheet DWG to a single PDF. ① The polyline scan re-read `ss.Count` on every iteration (one COM call per entity; AutoCAD could reject it while busy, and the call sat outside the `try`, aborting the whole scan) — the count is now read once. Block references, polylines and text reads now retry when AutoCAD is busy and skip only the bad entity. ② Detection retries up to 3 times (2 s / 4 s), and if it still fails the log states clearly that it falls back to layout plotting. Verified: all 13 architectural sheets plotted, no errors |

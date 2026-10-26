@@ -39,7 +39,7 @@ DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
 
 # 版本号：启动时写进 run.log，/api/ping 也会返回，
 # 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
-APP_VERSION = "1.9.1"
+APP_VERSION = "2.0"
 
 
 # ----------------------------------------------------------------- 全局状态
@@ -97,7 +97,7 @@ class Hub:
         if not single and (not src or not os.path.isdir(src)):
             return {"ok": False, "error": "请先选择 DWG 所在文件夹（路径不存在）"}
         base_dir = os.path.dirname(src) if single else src
-        out = (cfg.get("out") or "").strip() or os.path.join(base_dir, "PDF输出")
+        out = (cfg.get("out") or "").strip() or os.path.join(base_dir, "PDF")
         out = os.path.normpath(out)
         try:
             os.makedirs(out, exist_ok=True)
@@ -134,6 +134,7 @@ class Hub:
             on_event=self._on_event,
             cancel=self.cancel_event.is_set,
             keep_acad=bool(cfg.get("keep_acad", False)),
+            one_pdf=bool(cfg.get("one_pdf", True)),
         )
         self.converter = conv
         threading.Thread(target=self._worker, args=(conv,), daemon=True).start()

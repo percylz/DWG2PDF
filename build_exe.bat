@@ -13,6 +13,8 @@ if not exist "%PY%" (
 echo Building single-file exe ...
 "%PY%" -m PyInstaller --noconfirm --onefile --noconsole --name "DWG2PDF" ^
     --icon "app.ico" --add-data "ui.html;." ^
+    --exclude-module pymupdf --exclude-module fitz ^
+    --exclude-module numpy --exclude-module PIL ^
     --distpath "dist" --workpath "build" --specpath "." dwg2pdf_ui.py
 
 if errorlevel 1 goto failed
@@ -29,6 +31,6 @@ pause
 exit /b 1
 
 :nopython
-echo Python not found. Install Python 3.9+ and run: pip install pywin32 pyinstaller
+echo Python not found. Install Python 3.9+ and run: pip install pywin32 pyinstaller pypdf
 pause
 exit /b 1

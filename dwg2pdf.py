@@ -32,7 +32,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 from dataclasses import dataclass, asdict
@@ -94,6 +96,73 @@ def _remove_quietly(path: str) -> None:
             os.remove(path)
     except OSError:
         pass
+
+
+def _merge_pdfs(paths: list[str], out_path: str) -> int:
+    """
+    把多个单页 PDF 按给定顺序合并成一个多页 PDF（每页原样保留尺寸）。
+    优先用 pypdf（纯 Python，打包后体积小）；没装则退回 PyMuPDF。
+    返回页数。
+    """
+    paths = [p for p in paths if p and os.path.isfile(p)]
+    if not paths:
+        raise RuntimeError("没有可合并的 PDF")
+    tmp = out_path + TEMP_EXT
+
+    # AutoCAD 出的 PDF 里常见重复的 /PageMode 之类的键，pypdf 会刷一堆告警，
+    # 这些对结果没有影响，压掉，免得把日志刷得看不清
+    try:
+        import logging
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
+    except Exception:
+        pass
+
+    try:
+        from pypdf import PdfWriter
+    except ImportError:
+        PdfWriter = None                      # type: ignore[assignment]
+
+    if PdfWriter is not None:
+        writer = PdfWriter()
+        try:
+            for p in paths:
+                writer.append(p)
+            pages = len(writer.pages)
+            with open(tmp, "wb") as f:
+                writer.write(f)
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+    else:
+        # 兜底用 PyMuPDF。这里用 importlib 动态导入：
+        # 写成静态 import 会被 PyInstaller 当成依赖，白白把 exe 撑大 90 MB。
+        import importlib
+        _pdf = None
+        for mod in ("pymupdf", "fitz"):
+            try:
+                _pdf = importlib.import_module(mod)
+                break
+            except ImportError:
+                continue
+        if _pdf is None:
+            raise RuntimeError("缺少 PDF 合并库（pypdf 或 PyMuPDF），请先 "
+                               "pip install pypdf")
+        doc = _pdf.open()
+        try:
+            for p in paths:
+                with _pdf.open(p) as src:
+                    doc.insert_pdf(src)
+            pages = doc.page_count
+            doc.save(tmp)
+        finally:
+            doc.close()
+
+    if not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
+        raise RuntimeError("合并后没有生成文件")
+    os.replace(tmp, out_path)
+    return pages
 
 
 def clean_text(s: str) -> str:
@@ -1168,7 +1237,8 @@ class AcadPlotter:
             return 0
 
     def export_drawing(self, dwg_path: str, namer: Callable[[list[dict]], list[tuple[dict, str]]],
-                       skip_existing: bool = False) -> list[LayoutResult]:
+                       skip_existing: bool = False,
+                       on_sheet: Optional[Callable[[int, int, str], None]] = None) -> list[LayoutResult]:
         """
         处理一个 DWG：只打开一次文件，先确定要出哪些图纸，再逐个出图。
         单个图纸失败不影响同一个文件的其它图纸。
@@ -1192,9 +1262,14 @@ class AcadPlotter:
             targets = com_retry(lambda: self._targets(doc))
             plan = namer(targets)
 
-            for target, pdf_path in plan:
+            for idx, (target, pdf_path) in enumerate(plan, 1):
                 name = target["name"]
                 is_sheet = target.get("x0") is not None
+                if on_sheet is not None:
+                    try:
+                        on_sheet(idx, len(plan), name)
+                    except Exception:
+                        pass
                 if skip_existing and os.path.isfile(pdf_path) and os.path.getsize(pdf_path) > 0:
                     results.append(LayoutResult(win_path, name, pdf_path, "skip",
                                                 "PDF 已存在，已跳过"))
@@ -1357,7 +1432,7 @@ class Converter:
                  on_event: Optional[Callable[[dict], None]] = None,
                  cancel: Optional[Callable[[], bool]] = None,
                  dry_run: bool = False, keep_acad: bool = False,
-                 frames_mode: str = "auto"):
+                 frames_mode: str = "auto", one_pdf: bool = True):
         self.src = os.path.abspath(src)
         # 允许直接把单个 .dwg 文件当作输入
         self.single_file = None
@@ -1374,6 +1449,7 @@ class Converter:
         self.pc3 = pc3
         self.keep_acad = keep_acad
         self.frames_mode = frames_mode
+        self.one_pdf = bool(one_pdf)
         self.on_event = on_event or (lambda e: None)
         self.cancel = cancel or (lambda: False)
         self.dry_run = dry_run
@@ -1421,6 +1497,80 @@ class Converter:
         rel = os.path.relpath(os.path.dirname(dwg_path), self.src)
         return self.out if rel in (".", "") else os.path.join(self.out, rel)
 
+    def _merged_path(self, folder: str, stem: str) -> str:
+        """「一个 DWG 一个 PDF」时的成品路径：用 DWG 文件名（可加前缀）"""
+        base = safe_filename(f"{self.prefix}{stem}")
+        return os.path.join(folder, self._unique_name(base, folder, stem) + ".pdf")
+
+    def _export_merged(self, plotter, dwg: str, folder: str,
+                       stem: str) -> list[LayoutResult]:
+        """
+        一个 DWG → 一个多页 PDF：先把每张图纸出到临时目录，再按图纸顺序合并。
+        合并失败就退回「每张图纸一个文件」，结果不会丢。
+        """
+        final = self._merged_path(folder, stem)
+        if self.skip_existing and os.path.isfile(final) and os.path.getsize(final) > 0:
+            return [LayoutResult(dwg, "", final, "skip", "PDF 已存在，已跳过")]
+
+        tmpdir = tempfile.mkdtemp(prefix="dwg2pdf_")
+        try:
+            def namer(targets):
+                return [(t, os.path.join(tmpdir, "%04d.pdf" % n))
+                        for n, t in enumerate(targets, 1)]
+
+            def on_sheet(idx, total, name):
+                self._log(f"     第 {idx}/{total} 张：{name}")
+
+            try:
+                raw = plotter.export_drawing(dwg, namer, on_sheet=on_sheet)
+            except Exception as exc:                   # noqa: BLE001
+                self._log(f"  × 处理失败：{_humanize_com_error(exc)}，"
+                          f"正在重新连接 AutoCAD 后重试…")
+                plotter.connect()
+                raw = plotter.export_drawing(dwg, namer, on_sheet=on_sheet)
+
+            ok = [r for r in raw if r.status == "ok" and r.pdf and os.path.isfile(r.pdf)]
+            bad = [r for r in raw if r not in ok]
+            if not ok:
+                return raw or [LayoutResult(dwg, "", "", "fail",
+                                            "没有可导出的图纸（该文件没有布局）")]
+
+            os.makedirs(folder, exist_ok=True)
+            try:
+                pages = _merge_pdfs([r.pdf for r in ok], final)
+            except Exception as exc:                   # noqa: BLE001
+                self._log(f"  ！合并成一个 PDF 失败：{exc}；已改为每张图纸一个文件")
+                fallback: list[LayoutResult] = []
+                for r in ok:
+                    base = safe_filename(f"{self.prefix}{stem} - {r.layout}")
+                    dst = os.path.join(folder, self._unique_name(base, folder, stem) + ".pdf")
+                    try:
+                        shutil.move(r.pdf, dst)
+                    except OSError as exc2:
+                        fallback.append(LayoutResult(dwg, r.layout, r.pdf, "fail",
+                                                     f"文件无法移动：{exc2}"))
+                        continue
+                    fallback.append(LayoutResult(dwg, r.layout, dst, "ok",
+                                                 "合并失败，已按单张输出"))
+                return fallback + bad
+
+            size_mb = os.path.getsize(final) / 1024 / 1024
+            msg = f"{pages} 页 · {size_mb:.1f} MB"
+            if bad:
+                msg += f"，另有 {len(bad)} 张未出图"
+            return [LayoutResult(dwg, f"共 {pages} 张图纸", final, "ok", msg)] + bad
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _preview_merged(self, plotter, dwg: str, folder: str, stem: str) -> list[LayoutResult]:
+        """试运行：只算出会合并成几页，不出图"""
+        final = self._merged_path(folder, stem)
+        got = plotter.walk_layouts(dwg, lambda targets: [(t, "") for t in targets])
+        if not got:
+            return []
+        return [LayoutResult(dwg, f"共 {len(got)} 张图纸", final, "preview",
+                             f"合并为 1 个 PDF，共 {len(got)} 页")]
+
     # -------------------------------------------------- 主流程
     def run(self) -> dict:
         if not os.path.isdir(self.src):
@@ -1467,7 +1617,17 @@ class Converter:
                         plan.append((target, os.path.join(folder, base + ".pdf")))
                     return plan
 
-                if not self.dry_run:
+                if self.dry_run:
+                    results = (self._preview_merged(plotter, dwg, folder, stem)
+                               if self.one_pdf
+                               else plotter.walk_layouts(dwg, namer))
+                elif self.one_pdf:
+                    try:
+                        results = self._export_merged(plotter, dwg, folder, stem)
+                    except Exception as exc:             # noqa: BLE001
+                        results = [LayoutResult(dwg, "", "", "fail",
+                                                _humanize_com_error(exc))]
+                else:
                     try:
                         results = plotter.export_drawing(
                             dwg, namer, skip_existing=self.skip_existing)
@@ -1481,8 +1641,6 @@ class Converter:
                         except Exception as exc2:        # noqa: BLE001
                             results = [LayoutResult(dwg, "", "", "fail",
                                                     _humanize_com_error(exc2))]
-                else:
-                    results = plotter.walk_layouts(dwg, namer)
 
                 if not results:
                     self._log("  没有可导出的图纸（该文件只有模型空间，或没有布局）")
@@ -1493,7 +1651,10 @@ class Converter:
                         self.results.append(r)
                     fname = os.path.basename(r.pdf) or "-"
                     if r.status == "ok":
-                        self._log(f"  √ {fname}  ({r.layout})")
+                        if self.one_pdf and r.message:
+                            self._log(f"  √ {fname}  ({r.message})")
+                        else:
+                            self._log(f"  √ {fname}  ({r.layout})")
                     elif r.status == "preview":
                         preview_count += 1
                         self.results.append(r)
@@ -1542,6 +1703,11 @@ def main(argv=None) -> int:
     parser.add_argument("--keep-subdir", action="store_true", help="在输出目录中保持源文件夹结构")
     parser.add_argument("--skip-existing", action="store_true", help="跳过已存在的 PDF（断点续转）")
     parser.add_argument("--pc3", default=None, help=f"强制使用指定打印设备，默认 {DWG_TO_PDF}")
+    parser.add_argument("--one-pdf", dest="one_pdf", action="store_true",
+                        help="一个 DWG 只输出一个多页 PDF（每页一张图纸），默认就是这种方式")
+    parser.add_argument("--split", dest="one_pdf", action="store_false",
+                        help="每张图纸各输出一个 PDF（旧方式）")
+    parser.set_defaults(one_pdf=True)
     parser.add_argument("--keep-acad", action="store_true",
                         help="转换完成后保留 AutoCAD 进程（下次启动更快）")
     parser.add_argument("--dry-run", action="store_true", help="只列出会生成哪些 PDF，不出图")
@@ -1584,6 +1750,7 @@ def main(argv=None) -> int:
         keep_subdir=args.keep_subdir, skip_existing=args.skip_existing,
         pc3=args.pc3, on_event=on_event, dry_run=args.dry_run,
         keep_acad=args.keep_acad, frames_mode=args.frames_mode,
+        one_pdf=args.one_pdf,
     )
     try:
         summary = conv.run()
