@@ -105,6 +105,16 @@ PAGE_RANK_BOM = 1             # 物料清单（BOM）：默认排第 2 页
 PAGE_RANK_OTHER = 2           # 其它图纸：保持原顺序
 
 
+def _natural_key(name: str):
+    """
+    按名字里的数字做「自然排序」：「布局2」排在「布局10」前面，
+    而不是按字符串比大小（那样 布局10 < 布局2）。
+    只作为取不到 TabOrder 时的兜底。
+    """
+    parts = re.split(r"(\d+)", str(name or ""))
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in parts if p != ""]
+
+
 def _page_rank(*sources: str) -> int:
     """
     判断这张图纸该排第几页：LAYOUT 图 → 0，BOM 图 → 1，其它 → 2。
@@ -411,15 +421,42 @@ class AcadPlotter:
             pass
 
     def _layout_names(self, doc) -> list[str]:
-        """取出所有要出图的布局名；默认排除模型空间"""
-        names = []
+        """
+        取出所有要出图的布局名，**按布局空间的选项卡序号（TabOrder）排序**：
+        「布局1」第 1 张、「布局2」第 2 张……
+
+        注意：AutoCAD 的 Layouts 集合是按**名称字母序**枚举的（布局1、布局10、布局11…
+        布局2、布局3…），并不是选项卡顺序；只有 Layout.TabOrder 才是图纸标签上的真实
+        位置。不排序就会让 布局10 排到 布局2 前面。
+        """
+        picked = []                                  # (tab_order, 枚举序号, 名称)
+        skipped = 0
         count = doc.Layouts.Count
         for i in range(count):
-            layout = doc.Layouts.Item(i)
-            name = str(layout.Name)
+            try:
+                layout = doc.Layouts.Item(i)
+                name = str(layout.Name)
+            except Exception:
+                skipped += 1                         # 个别布局取不到，别把整份文件搞挂
+                continue
             if not self.include_model and name.strip().lower() == MODEL_LAYOUT:
                 continue
-            names.append(name)
+            try:
+                tab = int(layout.TabOrder)
+            except Exception:
+                tab = -1                             # 取不到就先按枚举顺序
+            picked.append((tab, i, name))
+
+        if skipped:
+            self.log(f"  ! 有 {skipped} 个布局读不出来，已跳过（其余照常出图）")
+
+        # 取不到 TabOrder（个别版本会返回同一个值）时，退回按名字里的数字排序
+        if len(picked) > 1 and len({t for t, _, _ in picked}) <= 1:
+            picked.sort(key=lambda t: (_natural_key(t[2]), t[1]))
+        else:
+            picked.sort(key=lambda t: (t[0], t[1]))
+
+        names = [n for _, _, n in picked]
 
         # 只有模型空间、没有任何图纸布局的图（简单图常见）：按一张图纸输出，
         # 否则这种文件会「什么都没生成」，容易让人以为程序没工作。

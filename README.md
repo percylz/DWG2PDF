@@ -123,10 +123,29 @@ in merge mode one 16-page PDF whose pages are 1189×841, 841×594 and 594×420 m
 
 Measured sample 2 (`1-IP DDC-AC- ICT2.dwg`, 13 layouts, all A4 landscape):
 merge mode → one `1-IP DDC-AC- ICT2.pdf` (13 pages, 5.2 MB); split mode → 13 files `布局1.pdf` … `布局13.pdf`.
-This DWG has `Panel Layout` on page 1 and `柜内设备清单 BOM LIST` on page 6; with the page-order rule on,
-the merged result is **page 1 = LAYOUT, page 2 = BOM** and the other 11 pages keep their order.
+Pages follow the layout numbers exactly: **page 1 = 布局1 (`Panel Layout`), page 2 = 布局2 (the BOM), …,
+page 13 = 布局13**. (Here the LAYOUT sheet happens to be layout 1 and the BOM layout 2, so the
+“LAYOUT first, BOM second” rule needs no move at all.)
 
-### Page order: LAYOUT page 1, BOM page 2 (v2.0.1, on by default)
+### Page order: the layout tab order (v2.1.1)
+
+When merging, the page order is the **tab order of the layouts inside that DWG**:
+`布局1` → page 1, `布局2` → page 2, … — exactly what you see in the tabs under the drawing area in AutoCAD.
+
+- It is based on each layout's AutoCAD `TabOrder`, **not** on the alphabetical order of the names.
+  That matters: the `Layouts` collection itself is enumerated alphabetically
+  (`布局1, 布局10, 布局11, 布局12, 布局13, 布局2 …`), so using it directly puts `布局10` before `布局2` —
+  which is what versions before v2.1.1 did.
+- Layouts with non-numeric names (`Ground Floor`, `A-101`) also follow the tab order; nothing is guessed.
+- If `TabOrder` cannot be read, the app falls back to a natural sort on the numbers in the name
+  (`布局2` before `布局10`).
+- Split mode plots in the same order, and the *“page n/m”* log lines follow it.
+
+### Page-order boost: LAYOUT page 1, BOM page 2 (v2.0.1, on by default)
+
+On top of the tab order, with this option ticked the app also moves the **LAYOUT (arrangement)** sheet to
+page 1 and the **BOM (bill of materials)** sheet to page 2 — useful when those sheets live further down the
+tab row. If they are already pages 1–2, nothing moves.
 
 Before merging, every sheet is classified:
 
@@ -214,7 +233,7 @@ copy it back over the one in this folder. Rebuilding needs Python plus `pip inst
 | Every PDF popped open in a reader while converting | Fixed in v1.2: the app writes a `.part` temp file and renames it, so no reader is launched |
 | `.part` files left in the output folder | Leftovers from a forced interruption — delete them. A re-run of the same sheet cleans them up |
 | Merging into one PDF fails | It falls back to one file per sheet — nothing is lost. The log shows `！合并成一个 PDF 失败：…`. Usual cause: `pypdf` missing in source mode (`pip install pypdf`) |
-| Page order is not what I expected | Page order = sheet order (the layout tab order, left to right in AutoCAD); names are not sorted. Since v2.0.1 the LAYOUT sheet is moved to page 1 and the BOM sheet to page 2; the rest follow sheet order. If a DWG's tabs are `布局1, 布局10, 布局11 …`, those remaining pages follow that order too |
+| Page order is not what I expected | Since v2.1.1 the page order is the **layout tab order** (`布局1` → page 1, `布局2` → page 2, …), read from AutoCAD's `TabOrder`, so the alphabetical order of layout names no longer matters. The only exception is the *LAYOUT first, BOM second* option (on by default): those two sheets are pulled to the front when they are not already there |
 | There is a BOM / LAYOUT sheet, but the order did not change | ① The option is off (checkbox or `--no-page-order`); ② neither the sheet name nor the page text contains a recognisable keyword; ③ more than one sheet matches the same type — the log says *“page order not unique, keeping sheet order”*; ④ that page contains **both** `LAYOUT` and `BOM`, so it counts as *other*. To force a sheet to the front, rename the layout or sheet title so it contains `LAYOUT` or `BOM` in CAD |
 | The reorder promoted a page it should not have | Untick *“LAYOUT sheet first, BOM sheet second when merging”*, or pass `--no-page-order`, then convert again |
 | Want to stop | Click *Stop*; the current sheet finishes first, then it stops |
@@ -242,6 +261,7 @@ With `start.bat` you can also just close the console window.
 | Version | Notes |
 |---------|-------|
 | v2.0 | ① **Selectable output layout**: the UI gained *one DWG →* with two choices — **merge into one multi-page PDF** (one page per sheet) or **one PDF per sheet**. In merge mode the file is named after the DWG, page order follows sheet order, and every page keeps its own paper size (mixed A0/A1/A3 stays mixed). CLI: `--one-pdf` (default) / `--split`. Merging uses pypdf; if the merge fails the app falls back to one file per sheet, so no result is lost. ② **Default output folder renamed** `PDF输出` → `PDF` |
+| v2.1.1 | **Page order now equals the layout number.** AutoCAD enumerates the `Layouts` collection alphabetically (`布局1, 布局10, 布局11, 布局12, 布局13, 布局2 …`); earlier versions used that order directly, which pushed `布局10` onto page 2 and `布局2` down to page 6. Pages are now sorted by each layout's **`TabOrder`** — `布局1` page 1, `布局2` page 2, … matching the tabs in AutoCAD; if `TabOrder` cannot be read the app falls back to a natural sort on the numbers in the name. Side note: the v2.0.1 report “BOM moved from page 6 to page 2” was this very bug (the BOM sheet is `布局2`); that rule now only kicks in when LAYOUT/BOM sheets sit further down the tab row. Verified on `1-IP DDC-AC- ICT2.dwg`: all 13 merged pages match `布局1.pdf` … `布局13.pdf` one by one |
 | v2.1.0 | ①**The output folder now follows the DWG folder**: picking the DWG folder auto-fills the output as `<that folder>\PDF`, which is created on start. It keeps following when you switch folders (for a single-DWG input, the DWG's own folder is used). A manually chosen output folder is never overwritten — the new **Default** button restores `<DWG folder>\PDF`. ②**“Mirror the source folder structure” is now ticked by default**, so sheets with the same name in different sub-folders no longer land side by side |
 | v2.0.1 | **Page-order rule**: when merging, the **LAYOUT (arrangement) sheet is moved to page 1** and the **BOM sheet to page 2**, all other sheets keep their order. Classification uses the sheet name (layout name / title-block title) and then the text on that PDF page (`LAYOUT`/`LAYOU`/`布置图`, `BOM`/`BILL OF MATERIAL`/`物料清单`/`设备清单`); if a type matches more than once, or a page contains both keywords, the original order is kept and the log explains why. New UI checkbox (on by default) and `--no-page-order` to disable. Verified on `1-IP DDC-AC- ICT2.dwg`: `Panel Layout` stays on page 1, `BOM LIST` moves from page 6 to page 2 |
 | v1.9.1 | Fixed *"still broken after replacing the exe"*: the launcher only checked whether something was listening on port 8791 and, if so, opened a browser page pointing at it — so an **old process with old code** kept doing the actual work. The launcher now reads that instance's version: same version is reused, a different version is shut down and replaced. `run.log` starts with `程序启动 v1.9.1 (PID …, port …)` and the UI shows the version next to the title, so you can always tell which build is running. Verified with the packaged exe on `1-IP DDC-AC- ICT2.dwg`: 13 of 13 sheets, A4 landscape, 96 %×96 % coverage |
