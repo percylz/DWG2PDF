@@ -886,30 +886,79 @@ class AcadPlotter:
             pass
         return None
 
-    def _pspace_box(self, layout, paper):
+    def _pspace_parts(self, layout, paper):
         """
-        图纸空间里「真正画在纸上」的内容范围（毫米）。
-        比纸大好几倍的对象直接忽略——那多半是跑出纸外的视口框或残留图形，
+        图纸空间里的内容分成两拨：视口框、其它对象（图框线、文字、表格…）。
+        比纸大好几倍的对象直接忽略——那多半是跑出纸外的残留图形，
         拿它当窗口就会把整张图缩成一个小角。
+        返回 (视口框列表, 其它对象的总框)
         """
         pw, ph = paper
         limit = pw * ph * 4.0
-        box = None
+        vps, other = [], None
         total = com_get(lambda: layout.Block.Count, 0)
         for i in range(total):
             def read(i=i):
                 e = layout.Block.Item(i)
                 mn, mx = e.GetBoundingBox()
+                is_vp = False
+                try:
+                    is_vp = str(e.ObjectName) == "AcDbViewport"
+                except Exception:
+                    pass
                 return (min(mn[0], mx[0]), min(mn[1], mx[1]),
-                        max(mn[0], mx[0]), max(mn[1], mx[1]))
-            b = com_get(read, None)
-            if not b:
+                        max(mn[0], mx[0]), max(mn[1], mx[1]), is_vp)
+            r = com_get(read, None)
+            if not r:
                 continue
+            b = r[:4]
             if (b[2] - b[0]) * (b[3] - b[1]) > limit:
+                continue
+            if r[4]:
+                vps.append(b)
+            else:
+                other = b if other is None else (min(other[0], b[0]), min(other[1], b[1]),
+                                                 max(other[2], b[2]), max(other[3], b[3]))
+        return vps, other
+
+    @staticmethod
+    def _union(boxes):
+        box = None
+        for b in boxes:
+            if not b:
                 continue
             box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]),
                                          max(box[2], b[2]), max(box[3], b[3]))
         return box
+
+    def _pspace_box(self, layout, paper):
+        """图纸空间里「真正画在纸上」的内容范围（毫米）——退回用，含所有视口"""
+        vps, other = self._pspace_parts(layout, paper)
+        return self._union(vps + [other])
+
+    def _sheet_box(self, layout, paper):
+        """
+        取「图框」范围。有些图在布局里放了两三个视口：
+        一个缩得很小、把整个模型都框进来的「总览」视口，尺寸比纸大得多；
+        真正要打印的是那个长宽比和纸张一致、面积最大的视口。
+        只有在**恰好一个**视口的长宽比和纸张吻合时才这么挑，
+        有两个以上都吻合（例如一张纸上并排两张图）就老老实实取并集，绝不乱裁。
+        """
+        vps, other = self._pspace_parts(layout, paper)
+        if len(vps) >= 2:
+            pw, ph = paper
+            want = max(pw, ph) / min(pw, ph)
+            cands = []
+            for b in vps:
+                w, h = b[2] - b[0], b[3] - b[1]
+                if w <= 5 or h <= 5:
+                    continue
+                ar = max(w, h) / min(w, h)
+                if abs(ar - want) <= 0.08 * want:
+                    cands.append(b)
+            if len(cands) == 1:
+                return self._union([cands[0], other])
+        return self._union(vps + [other])
 
     def _restore_media(self, layout, orig_media: str, orig_paper) -> bool:
         """
@@ -943,12 +992,28 @@ class AcadPlotter:
             return exact
         return False
 
+    @staticmethod
+    def _fits_in(cw: float, ch: float, paper) -> bool:
+        """
+        内容尺寸能不能在 1:1 下装进这张纸。
+        按「长边比长边、短边比短边」比，不考虑纸张当前的横竖方向——
+        页面设置里的纸常常是竖版 210x297，而图纸内容是横的，直接比宽高会误判成装不下。
+        """
+        pw, ph = paper
+        return (max(cw, ch) <= max(pw, ph) + 0.5
+                and min(cw, ch) <= min(pw, ph) + 0.5)
+
     def _fit_layout_to_page(self, layout) -> None:
         """
         页面设置没法照搬时（原打印设备是打印机驱动，纸名在 DWG To PDF 里不存在，
         会被换成 Letter 一类的默认纸），按图纸空间里真实的内容重新框定窗口：
-        纸张方向跟着图走、窗口取纸内内容、居中、比例不变，
-        避免出现「图只占一个角、其余大片空白」或「图被纸边裁掉」。
+        纸张方向跟着图走、窗口取内容、居中，避免「图只占一个角」或「图被纸边裁掉」。
+
+        两种情形分开处理，这是关键：
+        - 内容**装得下**这张纸 → 按 1:1 出图，比例一律不改（工程图纸比例是硬要求）；
+        - 内容**比纸还大** → 用「布满图纸」把整张纸缩进去。有些图的图纸空间内容
+          （图框 + 视口）本来就比页面设置里的纸大一圈、或者根本没落在纸张矩形里，
+          这时如果还按 1:1 或按纸张矩形裁窗口，出来的就是空白页或被切掉一半的图。
         """
         try:
             if str(layout.Name).strip().lower() == MODEL_LAYOUT:
@@ -958,18 +1023,20 @@ class AcadPlotter:
         paper = self._paper_size_mm(layout)
         if not paper:
             return
-        box = self._pspace_box(layout, paper)
+        box = self._sheet_box(layout, paper)
         if not box:
             return
         cw, ch = box[2] - box[0], box[3] - box[1]
         if cw <= 5 or ch <= 5:
             return
 
+        pw0, ph0 = paper
+        fits_first = self._fits_in(cw, ch, paper)
         # 纸张方向跟着图走：图是横的就用横版纸，别再靠「旋转 90°」硬塞，
         # 那样图会被纸边裁掉一半（实测就是这么出的问题）。
-        # 图是画到纸边的（内容几乎占满整张纸）时，用满幅无边距纸，
-        # 否则本机打印设备的可打印边距会把纸边那一圈内容裁掉。
-        edge_to_edge = cw * ch >= 0.75 * paper[0] * paper[1]
+        # 内容按 1:1 正好铺满整张纸时用满幅无边距纸，否则普通纸的 5/17 mm
+        # 可打印边距会把纸边那一圈内容裁掉。
+        edge_to_edge = fits_first and cw * ch >= 0.75 * pw0 * ph0
         media, mland, _exact = self._pick_media(layout, "", paper, cw >= ch,
                                                 allow_bleed=edge_to_edge)
         if media:
@@ -985,25 +1052,30 @@ class AcadPlotter:
                 pass
         pw, ph = paper
 
-        # 窗口取「纸内的那部分内容」：跑到纸外的对象（超尺寸视口、遗留图形）
-        # 本来也印不出来，但如果拿它们当窗口，整张图就会被压成中间一小块。
-        x0, y0 = max(box[0], 0.0), max(box[1], 0.0)
-        x1, y1 = min(box[2], pw), min(box[3], ph)
-        if x1 - x0 <= 5 or y1 - y0 <= 5:
-            return
-        if (x1 - x0) * (y1 - y0) < 0.02 * pw * ph:
-            return                             # 纸内几乎没东西，别乱改
+        fits = self._fits_in(cw, ch, paper)
+        pad = 0.0
+        if fits and (max(cw, ch) + 2.0 <= max(pw, ph)
+                     and min(cw, ch) + 2.0 <= min(pw, ph)):
+            pad = 1.0                                   # 四周留 1mm，别把边框压在裁切线
 
         try:
-            layout.SetWindowToPlot(self._double_array([x0, y0]),
-                                   self._double_array([x1, y1]))
+            layout.SetWindowToPlot(self._double_array([box[0] - pad, box[1] - pad]),
+                                   self._double_array([box[2] + pad, box[3] + pad]))
             layout.PlotType = 4                            # 4 = 窗口
             layout.CenterPlot = True
-            # 比例一律不动：工程图纸的比例是硬要求，宁可留白也不擅自缩放
-            if not getattr(self, "_fit_noted", False):
-                self._fit_noted = True
-                self.log("    · 原打印设备不是 PDF 设备，页面设置已按图纸内容重新框定并居中"
-                         "（比例不变）")
+            if fits:
+                layout.UseStandardScale = True
+                layout.StandardScale = 16                  # 1:1
+                if not getattr(self, "_fit_noted", False):
+                    self._fit_noted = True
+                    self.log("    · 原打印设备不是 PDF 设备，页面设置已按图纸内容重新框定并居中"
+                             "（比例不变）")
+            else:
+                layout.UseStandardScale = True
+                layout.StandardScale = 0                   # 0 = 布满图纸
+                self.log(f"    · 图纸内容 {round(cw)}x{round(ch)} mm 比纸张 "
+                         f"{round(pw)}x{round(ph)} mm 大，已按「布满图纸」缩放到本页"
+                         f"（整张图完整、不裁切）")
         except Exception as exc:                           # noqa: BLE001
             self.log(f"    · 按图纸内容重设窗口失败，仍按原页面设置出图：{exc}")
 
@@ -1144,20 +1216,39 @@ class AcadPlotter:
 
         temp_path = pdf_path + TEMP_EXT          # .part：无关联扩展名，不会被自动打开
         last_err = ""
+
+        def plot_once(cfg: str) -> bool:
+            _remove_quietly(temp_path)
+            plot.PlotToFile(temp_path, cfg)     # ← 传设备名，且写临时扩展名
+            return self._wait_file(temp_path, timeout=20)
+
         for cfg in plans:
+            fitted = False
             if cfg.strip().lower() != orig_cfg.strip().lower():
                 # 换了打印设备：先把纸张按原尺寸还原；换设备后原来的页面设置
                 # （尤其是「旋转」和可打印边距）含义会变，所以再按图纸内容
                 # 重新框一次窗口并居中，避免「图缩在一个角、其余大片空白」。
                 switch_to_pdf_device()
                 self._fit_layout_to_page(layout)
-            try:
-                _remove_quietly(temp_path)
-                plot.PlotToFile(temp_path, cfg)     # ← 传设备名，且写临时扩展名
-            except Exception as exc:               # noqa: BLE001
-                last_err = str(exc)
-                continue
-            if self._wait_file(temp_path, timeout=20):
+                fitted = True
+            for _try in range(2):
+                try:
+                    ok = plot_once(cfg)
+                except Exception as exc:               # noqa: BLE001
+                    last_err = str(exc)
+                    break
+                if not ok:
+                    last_err = "AutoCAD 未生成文件"
+                    break
+                # 出成了一张空白页：说明页面设置里的纸和图纸实际内容对不上
+                # （内容跑到纸张矩形外面去了）。这时按图纸内容重新框定再出一次。
+                if not fitted and self._pdf_is_blank(temp_path):
+                    self.log("    · 这一页是空白（页面设置与图纸内容不匹配），"
+                             "按图纸内容重新框定后重出")
+                    switch_to_pdf_device()
+                    self._fit_layout_to_page(layout)
+                    fitted = True
+                    continue
                 try:
                     os.replace(temp_path, pdf_path)
                     return
@@ -1169,14 +1260,36 @@ class AcadPlotter:
                         return
                     except OSError:
                         last_err = f"PDF 改名失败：{exc}"
-                        continue
-            last_err = "AutoCAD 未生成文件"
+                        break
 
         _remove_quietly(temp_path)
         raise RuntimeError(
             f"出图未生成文件（已尝试 {len(plans)} 种打印设备："
             + "、".join(plans) + (f"；最后错误：{last_err}" if last_err else "") + "）"
         )
+
+    @staticmethod
+    def _pdf_is_blank(path: str) -> bool:
+        """
+        判断刚出的 PDF 是不是「整页空白」：只看内容流是否为空。
+        读不了（没装 pypdf、文件还没写完）就当作不空白，绝不影响正常出图。
+        """
+        try:
+            from pypdf import PdfReader
+        except Exception:
+            return False
+        try:
+            reader = PdfReader(path)
+            if not reader.pages:
+                return False
+            page = reader.pages[0]
+            contents = page.get_contents()
+            if contents is None:
+                return True
+            data = contents.get_data() or b""
+            return len(data.strip()) < 40
+        except Exception:
+            return False
 
     @staticmethod
     def _wait_file(path: str, timeout: float = 30.0) -> bool:
