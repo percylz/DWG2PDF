@@ -98,6 +98,62 @@ def _remove_quietly(path: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------- 页序（LAYOUT / BOM）
+
+PAGE_RANK_LAYOUT = 0          # 布置图：默认排第 1 页
+PAGE_RANK_BOM = 1             # 物料清单（BOM）：默认排第 2 页
+PAGE_RANK_OTHER = 2           # 其它图纸：保持原顺序
+
+
+def _page_rank(*sources: str) -> int:
+    """
+    判断这张图纸该排第几页：LAYOUT 图 → 0，BOM 图 → 1，其它 → 2。
+    依次看每个来源（图纸名、页面文字），谁先能确定就用谁：
+    - 名字/文字里同时出现 LAYOUT 和 BOM（例如布置图的标题栏里印了 “BOM” 字段）时
+      分不清，判为「其它」，宁可不动也不能把图序搞乱。
+    """
+    for src in sources:
+        raw = src or ""
+        key = re.sub(r"[^A-Z0-9]", "", raw.upper())
+        if not key and not raw:
+            continue
+        is_layout = "LAYOU" in key or "布置图" in raw    # LAYOUT / LAYOU / 平面布置图
+        is_bom = ("BOM" in key or "BILLOFMATERIAL" in key
+                  or "物料清单" in raw or "设备清单" in raw)
+        if is_layout and not is_bom:
+            return PAGE_RANK_LAYOUT
+        if is_bom and not is_layout:
+            return PAGE_RANK_BOM
+        if is_layout and is_bom:
+            return PAGE_RANK_OTHER           # 两者都有，说不清，别动
+    return PAGE_RANK_OTHER
+
+
+def _pdf_head_text(path: str, limit: int = 6000) -> str:
+    """
+    读一页 PDF 的文字（只取前 limit 个字符），用来判断这页画的是哪类图。
+    读不到（没装 pypdf、扫描件、文字被转成曲线）就返回空串，调用方按「其它」处理。
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+    # AutoCAD 出的 PDF 常有重复的 /PageMode 等键，pypdf 会刷一堆告警，
+    # 对结果没有影响，压掉免得刷满日志
+    try:
+        import logging
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
+    except Exception:                         # noqa: BLE001
+        pass
+    try:
+        reader = PdfReader(path)
+        if not reader.pages:
+            return ""
+        return (reader.pages[0].extract_text() or "")[:limit]
+    except Exception:                         # noqa: BLE001
+        return ""
+
+
 def _merge_pdfs(paths: list[str], out_path: str) -> int:
     """
     把多个单页 PDF 按给定顺序合并成一个多页 PDF（每页原样保留尺寸）。
@@ -1432,7 +1488,8 @@ class Converter:
                  on_event: Optional[Callable[[dict], None]] = None,
                  cancel: Optional[Callable[[], bool]] = None,
                  dry_run: bool = False, keep_acad: bool = False,
-                 frames_mode: str = "auto", one_pdf: bool = True):
+                 frames_mode: str = "auto", one_pdf: bool = True,
+                 order_pages: bool = True):
         self.src = os.path.abspath(src)
         # 允许直接把单个 .dwg 文件当作输入
         self.single_file = None
@@ -1450,6 +1507,8 @@ class Converter:
         self.keep_acad = keep_acad
         self.frames_mode = frames_mode
         self.one_pdf = bool(one_pdf)
+        # 合并模式下默认把 LAYOUT 图排第 1 页、BOM 图排第 2 页
+        self.order_pages = bool(order_pages)
         self.on_event = on_event or (lambda e: None)
         self.cancel = cancel or (lambda: False)
         self.dry_run = dry_run
@@ -1502,6 +1561,53 @@ class Converter:
         base = safe_filename(f"{self.prefix}{stem}")
         return os.path.join(folder, self._unique_name(base, folder, stem) + ".pdf")
 
+    def _order_for_merge(self, items: list[LayoutResult]):
+        """
+        合并前按「LAYOUT 图排第 1 页、BOM 图排第 2 页」重排。
+        判断依据依次是：图纸名（布局名/图框标题）→ 这一页 PDF 里的文字。
+        同类图纸出现不止一张、或根本判断不出来时保持原顺序，绝不乱动。
+        返回 (新列表, 说明文字)。
+        """
+        if not self.order_pages or len(items) < 2:
+            return items, ""
+
+        ranks = []
+        for r in items:
+            rank = _page_rank(r.layout)
+            if rank == PAGE_RANK_OTHER and r.pdf:
+                rank = _page_rank(_pdf_head_text(r.pdf))
+            ranks.append(rank)
+
+        lay = [i for i, k in enumerate(ranks) if k == PAGE_RANK_LAYOUT]
+        bom = [i for i, k in enumerate(ranks) if k == PAGE_RANK_BOM]
+        if len(lay) > 1 or len(bom) > 1:
+            self._log(f"  · 识别到 {len(lay)} 张 LAYOUT 图、{len(bom)} 张 BOM 图，"
+                      f"无法唯一确定页序，保持图纸原顺序")
+            return items, ""
+        if not lay and not bom:
+            return items, ""
+
+        if lay and bom:
+            a, b = lay[0], bom[0]
+            rest = [r for i, r in enumerate(items) if i not in (a, b)]
+            new = [items[a], items[b]] + rest
+            note = "LAYOUT 图排第 1 页、BOM 图排第 2 页"
+        elif lay:
+            a = lay[0]
+            new = [items[a]] + [r for i, r in enumerate(items) if i != a]
+            note = "LAYOUT 图排第 1 页"
+        else:
+            b = bom[0]
+            rest = [r for i, r in enumerate(items) if i != b]
+            if not rest:
+                return items, ""
+            new = rest[:1] + [items[b]] + rest[1:]
+            note = "BOM 图排第 2 页"
+
+        if new == items:
+            return items, ""
+        return new, note
+
     def _export_merged(self, plotter, dwg: str, folder: str,
                        stem: str) -> list[LayoutResult]:
         """
@@ -1536,8 +1642,12 @@ class Converter:
                                             "没有可导出的图纸（该文件没有布局）")]
 
             os.makedirs(folder, exist_ok=True)
+            # 默认把 LAYOUT 图放第 1 页、BOM 图放第 2 页（--no-page-order 可关掉）
+            ordered, note = self._order_for_merge(ok)
+            if note:
+                self._log(f"  · 页序已调整：{note}")
             try:
-                pages = _merge_pdfs([r.pdf for r in ok], final)
+                pages = _merge_pdfs([r.pdf for r in ordered], final)
             except Exception as exc:                   # noqa: BLE001
                 self._log(f"  ！合并成一个 PDF 失败：{exc}；已改为每张图纸一个文件")
                 fallback: list[LayoutResult] = []
@@ -1708,6 +1818,9 @@ def main(argv=None) -> int:
     parser.add_argument("--split", dest="one_pdf", action="store_false",
                         help="每张图纸各输出一个 PDF（旧方式）")
     parser.set_defaults(one_pdf=True)
+    parser.add_argument("--no-page-order", dest="order_pages", action="store_false",
+                        help="合并时不要自动调整页序（默认会把 LAYOUT 图排第 1 页、BOM 图排第 2 页）")
+    parser.set_defaults(order_pages=True)
     parser.add_argument("--keep-acad", action="store_true",
                         help="转换完成后保留 AutoCAD 进程（下次启动更快）")
     parser.add_argument("--dry-run", action="store_true", help="只列出会生成哪些 PDF，不出图")
@@ -1750,7 +1863,7 @@ def main(argv=None) -> int:
         keep_subdir=args.keep_subdir, skip_existing=args.skip_existing,
         pc3=args.pc3, on_event=on_event, dry_run=args.dry_run,
         keep_acad=args.keep_acad, frames_mode=args.frames_mode,
-        one_pdf=args.one_pdf,
+        one_pdf=args.one_pdf, order_pages=args.order_pages,
     )
     try:
         summary = conv.run()

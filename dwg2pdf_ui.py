@@ -39,7 +39,7 @@ DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
 
 # 版本号：启动时写进 run.log，/api/ping 也会返回，
 # 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
-APP_VERSION = "2.0"
+APP_VERSION = "2.0.1"
 
 
 # ----------------------------------------------------------------- 全局状态
@@ -135,6 +135,7 @@ class Hub:
             cancel=self.cancel_event.is_set,
             keep_acad=bool(cfg.get("keep_acad", False)),
             one_pdf=bool(cfg.get("one_pdf", True)),
+            order_pages=bool(cfg.get("order_pages", True)),
         )
         self.converter = conv
         threading.Thread(target=self._worker, args=(conv,), daemon=True).start()

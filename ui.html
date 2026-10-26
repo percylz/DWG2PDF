@@ -243,6 +243,7 @@
         <label><input type="checkbox" id="include_model"> 同时导出模型空间</label>
         <label><input type="checkbox" id="skip_existing"> 跳过已生成的 PDF</label>
         <label><input type="checkbox" id="frames" checked> 多图纸按图框拆分（A0-A4）</label>
+        <label><input type="checkbox" id="order_pages" checked> 合并时 LAYOUT 图排第 1 页、BOM 图排第 2 页</label>
         <label><input type="checkbox" id="keep_acad"> 转换后保留 AutoCAD 进程</label>
       </div>
     </div>
@@ -250,6 +251,9 @@
     <div class="hint" style="margin-top:14px">
       选「合并成 1 个 PDF」时，文件名取 DWG 的文件名（可加前缀），页序就是图纸顺序，
       一个 13 张图的 DWG 只出一个 13 页的 PDF；选「每张图纸各出 1 个 PDF」时，文件名取图纸名。<br>
+      勾选「LAYOUT 图排第 1 页、BOM 图排第 2 页」时，合并前会把 LAYOUT（布置图）提到第 1 页、
+      BOM（物料清单）提到第 2 页，其余图纸顺序不变；程序按图纸名和页面文字判断，
+      认不出来或同类型有多张时自动保持原顺序，日志里会写明。<br>
       同一文件夹里不同 DWG 出现同名图纸时，会自动补上源文件名区分，例如
       <code>一层平面图 - 结构B.pdf</code>，不会互相覆盖。<br>
       勾选「多图纸按图框拆分」时，若图纸布局是空的、所有图都排在一张模型空间里，
@@ -380,7 +384,7 @@ function setRunning(v){
   $('btnStop').disabled = !v;
   const dot = $('dot');
   if(dot) dot.className = 'dot' + (v ? ' run' : '');
-  ['src','out','prefix','recursive','keep_subdir','include_model','skip_existing','keep_acad','frames']
+  ['src','out','prefix','recursive','keep_subdir','include_model','skip_existing','keep_acad','frames','order_pages']
     .forEach(id => { const el = $(id); if(el) el.disabled = v; });
 }
 
@@ -594,6 +598,7 @@ async function start(){
     keep_acad: $('keep_acad').checked,
     frames_mode: $('frames').checked ? 'auto' : 'layouts',
     one_pdf: mergedMode(),
+    order_pages: $('order_pages').checked,
   };
   if(!cfg.src){ alert('请先选择 DWG 所在文件夹'); return; }
 
