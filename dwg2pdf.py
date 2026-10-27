@@ -676,6 +676,75 @@ class AcadPlotter:
                 frames.append(f)
         return frames
 
+    def _sheets_from_repeated_blocks(self, doc, frame: dict) -> list[dict]:
+        """
+        大外框里并排画了 N 张图时，图与图之间常常没有分割线，但每张图都有**同一个图签块**
+        （同名、同尺寸、按行或按列排开）。用这些重复块把外框拆成 N 张图纸。
+
+        认的条件（都满足才算）：
+        - 同名块出现 ≥2 次，尺寸一致（毫米取整后相同）；
+        - 每个块的短边 ≥100 mm、长边 ≤1300 mm，长宽比 0.5~2.0（像个图幅，不像图例表格）；
+        - 块都在外框里，且这些块加起来占外框面积 ≥35%（否则只是图框里的小图标）；
+        - 取「出现次数最多」的那一组。
+        """
+        scale = frame.get("scale") or 1
+        try:
+            ss = self._ss(doc, "d2p_ins2")
+            ss.Select(5, 0, 0, self._short_array([0]), self._variant_array(["INSERT"]))
+            total = com_get(lambda: ss.Count, 0)
+        except Exception:
+            return []
+        if not total:
+            return []
+
+        fx0, fy0, fx1, fy1 = frame["x0"], frame["y0"], frame["x1"], frame["y1"]
+        groups: dict[tuple, list[tuple]] = {}
+
+        def read_one(idx: int):
+            e = ss.Item(idx)
+            mn, mx = e.GetBoundingBox()
+            return (str(e.Name), min(mn[0], mx[0]), min(mn[1], mx[1]),
+                    max(mn[0], mx[0]), max(mn[1], mx[1]))
+
+        for i in range(total):
+            r = com_get(lambda i=i: read_one(i), None)
+            if not r:
+                continue
+            name, x0, y0, x1, y1 = r
+            w, h = x1 - x0, y1 - y0
+            if w <= 0 or h <= 0:
+                continue
+            # 允许压线（图签块常常正好落在外框上），但不能明显跑到框外
+            if x0 < fx0 - w * 0.2 or y0 < fy0 - h * 0.2 \
+                    or x1 > fx1 + w * 0.2 or y1 > fy1 + h * 0.2:
+                continue
+            groups.setdefault((name, round(w / scale), round(h / scale)),
+                              []).append((x0, y0, x1, y1))
+
+        best = None
+        frame_area = max(1.0, (fx1 - fx0) * (fy1 - fy0))
+        for key, rects in groups.items():
+            if len(rects) < 2:
+                continue
+            _name, wmm, hmm = key
+            if min(wmm, hmm) < 100 or max(wmm, hmm) > 1300:
+                continue
+            if not (0.5 <= wmm / max(hmm, 1) <= 2.0):
+                continue
+            cover = sum((b[2] - b[0]) * (b[3] - b[1]) for b in rects) / frame_area
+            if cover < 0.35:
+                continue
+            if best is None or len(rects) > len(best[1]):
+                best = (key, rects)
+        if not best:
+            return []
+        (name, wmm, hmm), rects = best
+        self.log(f"  （外框里识别到 {len(rects)} 个同款图签块「{name}」{wmm}x{hmm} mm，按它拆成 "
+                 f"{len(rects)} 张图）")
+        return [{"paper": self._paper_label(wmm, hmm), "paper_mm": (wmm, hmm),
+                 "scale": scale, "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
+                for b in rects]
+
     @staticmethod
     def _frame_area(f) -> float:
         return (f["x1"] - f["x0"]) * (f["y1"] - f["y0"])
@@ -788,6 +857,17 @@ class AcadPlotter:
         if not frames:
             return []
         frames = self._dedupe_frames(frames)
+        # 一个又长又扁的大框，很可能不是「一张加长图纸」，而是好几张图并排画在
+        # 一个外框里（外框只是装饰，图之间没有分割线）。这时用重复出现的图签块拆开。
+        if len(frames) == 1:
+            f = frames[0]
+            fw, fh = f["x1"] - f["x0"], f["y1"] - f["y0"]
+            ar = max(fw, fh) / max(min(fw, fh), 1e-6)
+            if ar >= 1.8 or ar <= 0.55:
+                sub = self._sheets_from_repeated_blocks(doc, f)
+                if len(sub) >= 2:
+                    frames = sub
+                    source = "重复图签块"
         frames.sort(key=lambda f: (-round(f["y1"] / 100.0), f["x0"]))
         for i, f in enumerate(frames, 1):
             f["index"] = i
@@ -802,6 +882,12 @@ class AcadPlotter:
     @staticmethod
     def _media_landscape(name: str):
         """从纸张名里读出方向：'ISO_A1_(841.00_x_594.00_MM)' → 横版"""
+        up = (name or "").strip().upper()
+        # 部分 PDF 打印机的自定义纸用 P_/L_ 前缀标方向，P_(1191_x_843) 实际是竖版
+        if up.startswith("P_("):
+            return False
+        if up.startswith("L_("):
+            return True
         m = re.search(r"(\d+(?:\.\d+)?)_x_(\d+(?:\.\d+)?)", name)
         if m:
             try:
@@ -865,6 +951,19 @@ class AcadPlotter:
                 same_dir.sort(key=lambda x: (abs(max(x[1]) - t_long), -max(x[1])))
                 pick = same_dir[0][0]
                 return pick, self._media_landscape(pick), False
+            # 尺寸对不上任何标准纸（非标图幅、按图签块算出来的小图框等）：
+            # 挑一张「装得下」的最小标准纸，宁可大一圈也不要把图塞进一张小纸里
+            containers = []
+            for n in pool:
+                mw, mh = self._media_size(n)
+                ml, ms = max(mw, mh), min(mw, mh)
+                if ml + 1 >= t_long and ms + 1 >= t_short:
+                    # 面积相同的横竖两版（A4 297x210 / 210x297）优先挑方向一致的
+                    containers.append((ml * ms, self._media_landscape(n) != want_landscape, n))
+            if containers:
+                containers.sort()
+                pick = containers[0][2]
+                return pick, self._media_landscape(pick), False
         up = str(paper).upper()
         cands = [n for n in pool if n.upper().startswith(f"ISO_{up}_")] \
             or [n for n in pool if n.upper().startswith(up)]
@@ -877,12 +976,21 @@ class AcadPlotter:
     # -------------------------------------------------- 布局页面设置修复
 
     def _paper_size_mm(self, layout):
-        """当前打印设备下这张纸的物理尺寸（毫米）"""
+        """
+        当前打印设备下这张纸的**实际出图尺寸**（毫米）。
+        GetPaperSize() 只给纸张的标称尺寸，不看「旋转」：ISO_A0 永远是 841x1189。
+        但 PlotRotation = 90/270 时出图是横的（PDF 页面 1189x841）。
+        不换算就会把横图当成竖纸来比，1:1 出图左右直接裁掉一半。
+        """
         try:
             w, h = layout.GetPaperSize()
             w, h = float(w), float(h)
             if w > 10 and h > 10:
-                return (w, h)
+                try:
+                    rot = int(layout.PlotRotation or 0)
+                except Exception:
+                    rot = 0
+                return (h, w) if rot in (1, 3) else (w, h)
         except Exception:
             pass
         return None
@@ -914,7 +1022,13 @@ class AcadPlotter:
                 continue
             b = r[:4]
             if (b[2] - b[0]) * (b[3] - b[1]) > limit:
-                continue
+                # 标准图幅（A0~A4）的图框一律留着：页面设置里的纸选错成 Letter 时，
+                # 真正的图框会比「4 倍纸面积」还大，误删就会把图框和标题栏切掉。
+                w, h = b[2] - b[0], b[3] - b[1]
+                long_, short_ = max(w, h), min(w, h)
+                if not any(abs(long_ - pw2) <= 6 and abs(short_ - ph2) <= 6
+                           for pw2, ph2 in PAPER_SIZES.values()):
+                    continue
             if r[4]:
                 vps.append(b)
             else:
@@ -971,6 +1085,14 @@ class AcadPlotter:
                     band = [b for b in cands
                             if 0.5 * paper_area <= (b[2] - b[0]) * (b[3] - b[1]) <= 2.0 * paper_area]
                     return self._union((band or cands) + [other])
+            # 一个都不像图框（总览视口又大又扁、局部视口又小）：挑「面积最接近纸张」的
+            # 那个视口——它通常就是真正画在纸上的视图；再和图纸空间里的图框线取并集。
+            if vps:
+                def _closeness(b):
+                    area = max((b[2] - b[0]) * (b[3] - b[1]), 1e-6)
+                    return abs(math.log(area / paper_area))
+                best = min(vps, key=_closeness)
+                return self._union([best, other])
         return self._union(vps + [other])
 
     def _restore_media(self, layout, orig_media: str, orig_paper) -> bool:
@@ -1004,6 +1126,28 @@ class AcadPlotter:
                          f"改用 {media}")
             return exact
         return False
+
+    def _rotation_for(self, media, cw: float, ch: float) -> int:
+        """
+        纸和图的横竖不一致时，出图要旋转 90°（0 不转）。
+        DWG To PDF 的 ISO/ANSI 纸名只有一种写法（A0 就是 841x1189 竖版），
+        横图要 1:1 出进去只能靠旋转——旋转后 PDF 页面本身也变成横的
+        （实测 PlotRotation=1/3 → 页面 1189x841）。
+        """
+        size = self._media_size(media) if media else None
+        if not size:
+            return 0
+        media_land = size[0] >= size[1]
+        want_land = cw >= ch
+        return 1 if media_land != want_land else 0
+
+    def _sheet_size_after(self, media, rot: int):
+        """选完纸、定好旋转之后，PDF 页面实际是多少毫米"""
+        size = self._media_size(media) if media else None
+        if not size:
+            return None
+        w, h = size
+        return (h, w) if rot in (1, 3) else (w, h)
 
     @staticmethod
     def _fits_in(cw: float, ch: float, paper) -> bool:
@@ -1046,6 +1190,12 @@ class AcadPlotter:
         pw0, ph0 = paper
         fits_first = self._fits_in(cw, ch, paper)
         fill_first = (cw * ch / (pw0 * ph0)) if pw0 * ph0 else 0.0
+        # 纸本身选错了也得先换纸：原打印设备的纸名在 DWG To PDF 里没有时，AutoCAD 会
+        # 退回默认的 Letter，A0 的图被硬塞进 Letter 只会糊成一团（实测就是这么出的）。
+        # 判据：图比纸大，而且纸的短边不到图短边的 7 成。
+        target = paper
+        if (not fits_first) and min(pw0, ph0) < 0.7 * min(cw, ch):
+            target = (cw, ch)
         # 纸张方向跟着图走：图是横的就用横版纸，别再靠「旋转 90°」硬塞，
         # 那样图会被纸边裁掉一半（实测就是这么出的问题）。
         # 用满幅无边距纸（full_bleed）的两种情况：
@@ -1053,11 +1203,11 @@ class AcadPlotter:
         # - 需要按图框缩放（内容比纸大、或图框只占纸的一小块）：既然要缩，就缩到纸边，
         #   否则普通纸的边距会让整页四周留出一大圈白边（实测只剩 81%，看着就是「没铺满」）。
         edge_to_edge = (fits_first and fill_first >= 0.75) or (not fits_first) or fill_first < 0.80
-        media, mland, _exact = self._pick_media(layout, "", paper, cw >= ch,
+        media, mland, _exact = self._pick_media(layout, "", target, cw >= ch,
                                                 allow_bleed=edge_to_edge)
         if edge_to_edge and not _exact:
             # 满幅纸里没有这个尺寸（非标纸幅、英制纸等）：退回普通纸，别硬凑一张别的尺寸
-            m2, l2, e2 = self._pick_media(layout, "", paper, cw >= ch, allow_bleed=False)
+            m2, l2, e2 = self._pick_media(layout, "", target, cw >= ch, allow_bleed=False)
             if e2:
                 media, mland, _exact = m2, l2, e2
         if media:
@@ -1065,15 +1215,12 @@ class AcadPlotter:
                 layout.CanonicalMediaName = media
             except Exception:
                 pass
-            paper = self._paper_size_mm(layout) or paper
-        if mland is not None:
-            try:
-                layout.PlotRotation = 0
-            except Exception:
-                pass
-        pw, ph = paper
+        # 纸张方向必须跟图一致：DWG To PDF 的 A 系列纸名只有竖版（A0 就是 841x1189），
+        # 想把横图（1189x841）1:1 出进去，只能把出图旋转 90°（页面本身会变成 1189x841）。
+        rot = self._rotation_for(media, cw, ch)
+        pw, ph = self._sheet_size_after(media, rot) or paper
 
-        fits = self._fits_in(cw, ch, paper)
+        fits = self._fits_in(cw, ch, (pw, ph))
         # 图框占纸张的比例。正常图纸的图框≈纸张（实测 92%~100%）；
         # 有的图图框比纸小一大截（例如 122x88 mm 的图框配 A4 纸，只占 17%），
         # 那是页面设置和图纸对不上，1:1 出来就是「图缩在页面中间、四周一圈白边」。
@@ -1085,6 +1232,9 @@ class AcadPlotter:
         pad = 1.0
         if not keep_scale and not fits:
             # 内容比纸大时这点余量没意义，反而让缩放的基数变模糊，干脆不留
+            pad = 0.0
+        if keep_scale and (cw + 2 * pad > pw + 0.5 or ch + 2 * pad > ph + 0.5):
+            # 图框本来就顶到纸边（差不到 1mm）时再加余量，出图会被纸边裁掉一圈
             pad = 0.0
 
         try:
@@ -1110,6 +1260,9 @@ class AcadPlotter:
                     self.log(f"    · 图纸内容 {round(cw)}x{round(ch)} mm 比纸张 "
                              f"{round(pw)}x{round(ph)} mm 大，已按「布满图纸」缩放到本页"
                              f"（整张图完整、不裁切）")
+            # 旋转放到最后设：先设旋转再设窗口，窗口坐标会被当成「已旋转的坐标系」来解释，
+            # 出图结果是横躺并被裁掉（实测）。顺序反了就是这个下场。
+            layout.PlotRotation = rot
         except Exception as exc:                           # noqa: BLE001
             self.log(f"    · 按图纸内容重设窗口失败，仍按原页面设置出图：{exc}")
 
@@ -1140,8 +1293,13 @@ class AcadPlotter:
             pass
         w, h = sheet["x1"] - sheet["x0"], sheet["y1"] - sheet["y0"]
         want_landscape = w >= h
+        # 模型空间的图一律「布满图纸」出图，所以配满幅无边距纸：普通纸 5/17 mm 的
+        # 可打印边距会把纸边那圈内容裁掉，也让整页四周多出一圈白边。
         media, media_landscape, media_exact = self._pick_media(
-            model, sheet["paper"], sheet.get("paper_mm"), want_landscape)
+            model, sheet["paper"], sheet.get("paper_mm"), want_landscape, allow_bleed=True)
+        if not media:
+            media, media_landscape, media_exact = self._pick_media(
+                model, sheet["paper"], sheet.get("paper_mm"), want_landscape)
         if media:
             try:
                 model.CanonicalMediaName = media
@@ -1153,15 +1311,22 @@ class AcadPlotter:
         # 注意顺序：必须先设置窗口范围，再切到「按窗口出图」。
         # 反过来时，如果图纸原有的窗口范围是空的（很多图 PlotType=0 显示），
         # AutoCAD 会直接报「输入无效」。
-        model.SetWindowToPlot(self._double_array([sheet["x0"], sheet["y0"]]),
-                              self._double_array([sheet["x1"], sheet["y1"]]))
+        # 窗口四周留 0.4 mm（换算成图形单位）：满幅纸上图框线正好压在纸边，
+        # 不留这点余量，图框最外那条线会被裁掉一半。
+        pad = 0.4 * float(sheet.get("scale") or 1)
+        model.SetWindowToPlot(self._double_array([sheet["x0"] - pad, sheet["y0"] - pad]),
+                              self._double_array([sheet["x1"] + pad, sheet["y1"] + pad]))
         model.PlotType = 4                                  # 4 = 窗口
         model.CenterPlot = True
         model.UseStandardScale = True
         model.StandardScale = 0                             # 0 = 布满图纸
-        # 纸张方向和图纸方向不一致时旋转 90°（例如 A0 只有竖版纸张）
-        model.PlotRotation = 1 if (media_landscape is not None
-                                   and media_landscape != want_landscape) else 0
+        # 注意：模型空间的窗口是「图形坐标」，出图旋转会把图形本身转 90°（实测出来的
+        # 图是躺着的、还会被纸边裁掉）。所以这里靠「挑一张方向一致的纸」解决，
+        # 不能靠 PlotRotation。真没有同方向的纸（A0 只有竖版）就宁可留白也不要转。
+        try:
+            model.PlotRotation = 0
+        except Exception:
+            pass
 
         try:
             doc.Plot.QuietErrorMode = True
@@ -1753,6 +1918,13 @@ class Converter:
         返回 (新列表, 说明文字)。
         """
         if not self.order_pages or len(items) < 2:
+            return items, ""
+
+        names = [str(getattr(r, "layout", "") or "") for r in items]
+        if len(set(names)) < len(names):
+            # 图纸名有重复：多半是标题没读出来、几张图都取了同一段说明文字，
+            # 这时只能靠页面文字猜，猜错了会把页序搞乱，所以宁可不调。
+            self._log("  · 图纸标题有重复，无法可靠判断页序，保持图纸原顺序")
             return items, ""
 
         ranks = []
