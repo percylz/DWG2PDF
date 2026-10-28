@@ -245,8 +245,25 @@
         <label><input type="checkbox" id="include_model"> 同时导出模型空间</label>
         <label><input type="checkbox" id="skip_existing"> 跳过已生成的 PDF</label>
         <label><input type="checkbox" id="frames" checked> 多图纸按图框拆分（A0-A4）</label>
-        <label><input type="checkbox" id="order_pages" checked> 合并时 LAYOUT 图排第 1 页、BOM 图排第 2 页</label>
+        <label><input type="checkbox" id="order_pages"> 合并时 LAYOUT 图排第 1 页、BOM 图排第 2 页</label>
         <label><input type="checkbox" id="keep_acad"> 转换后保留 AutoCAD 进程</label>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>纸张大小</label>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <select id="paper" style="min-width:190px">
+          <option value="A0">A0</option>
+          <option value="A1" selected>A1（默认，推荐）</option>
+          <option value="A2">A2</option>
+          <option value="A3">A3</option>
+          <option value="A4">A4</option>
+          <option value="auto">自动（按图纸本身尺寸）</option>
+        </select>
+        <span class="hint" style="margin:0">
+          图纸比选定的纸小就等比放大（字更大、更清楚）；图纸本身比它大时保持图纸原尺寸，不会被缩小。
+        </span>
       </div>
     </div>
 
@@ -415,7 +432,7 @@ function setRunning(v){
   $('btnStop').disabled = !v;
   const dot = $('dot');
   if(dot) dot.className = 'dot' + (v ? ' run' : '');
-  ['src','out','prefix','recursive','keep_subdir','include_model','skip_existing','keep_acad','frames','order_pages']
+  ['src','out','prefix','recursive','keep_subdir','include_model','skip_existing','keep_acad','frames','order_pages','paper']
     .forEach(id => { const el = $(id); if(el) el.disabled = v; });
 }
 
@@ -632,6 +649,7 @@ async function start(){
     frames_mode: $('frames').checked ? 'auto' : 'layouts',
     one_pdf: mergedMode(),
     order_pages: $('order_pages').checked,
+    paper: $('paper').value,
   };
   if(!cfg.src){ alert('请先选择 DWG 所在文件夹'); return; }
 

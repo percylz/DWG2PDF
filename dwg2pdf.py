@@ -67,6 +67,10 @@ KNOWN_SCALES = (1, 2, 2.5, 5, 10, 20, 25, 30, 40, 50, 75, 100, 125, 150,
                 200, 250, 300, 400, 500, 600, 750, 1000, 1500, 2000)
 FRAME_BLOCK = re.compile(r"^A[0-4]$", re.I)          # 图框块命名约定：A0 / A1 / A2 / A3 / A4
 SHEET_CODE = re.compile(r"^[A-Za-z]{1,4}[-_ ]?\d{1,4}$")   # 图号，如 FD-09 / A-101
+# 长图号：KUL01-BLKA1-SC-E-70001-Z 这种「好几段、用横线连」的编号（东南亚项目常用）
+LONG_CODE = re.compile(r"^[A-Za-z0-9]{1,10}(?:[-_][A-Za-z0-9]{1,10}){3,}$")
+# 说明性文字不是图名
+NOTE_PREFIX = re.compile(r"^(note|notes|remark|remarks|说明|备注|注)[\s:：]", re.I)
 MTEXT_CODES = re.compile(r"\\[A-Za-z][^;\\]*;?|[{}]")       # MText 里的格式控制符
 
 
@@ -305,11 +309,14 @@ class AcadPlotter:
 
     def __init__(self, pc3: Optional[str] = None, include_model: bool = False,
                  force_pc3: bool = False, frames_mode: str = "auto",
-                 log: Optional[Callable[[str], None]] = None):
+                 paper_size: str = "", log: Optional[Callable[[str], None]] = None):
         self.pc3 = pc3 or DWG_TO_PDF
         self.include_model = include_model
         self.force_pc3 = force_pc3
         self.frames_mode = frames_mode      # auto / frames / layouts
+        # 出图纸张：''/auto = 跟着图纸走；A0~A4 = 不小于图纸的那张（只放大、不缩小）
+        self.paper_size = (paper_size or "").strip().upper()
+        self._paper_noted: set[str] = set()
         self.log = log or (lambda msg: None)
         self.app = None
         self._pythoncom = None
@@ -749,6 +756,120 @@ class AcadPlotter:
     def _frame_area(f) -> float:
         return (f["x1"] - f["x0"]) * (f["y1"] - f["y0"])
 
+    def _sheets_from_title_blocks(self, doc) -> list[dict]:
+        """
+        连一个图框都认不出来时，最后再试一招：找「同名、同尺寸、成排摆放」的
+        **整张图纸模板块**——把「图框 + 标题栏 + 全部内容」做成一个块，复制 N 份并排画。
+
+        实测 KUL01-BLKA1-SC-E-70001~3（MCB BOARD DETAILS）就是这么画的：4 个「图签1」
+        块 267.5x189.2 mm 严丝合缝地并排，既没有外框、没有分割线，也没有 A0-A4 命名的
+        图框块，旧逻辑只能把整个模型空间当一张图，4 张图纸全挤在一页里。
+
+        认的条件（全部满足）：
+        - 同名块 ≥2 个，尺寸一致；
+        - 这些块互不重叠，加起来占它们并集的 ≥85%（每个块本身就是一张纸；
+          「每张纸右下角放一个小图签」那种只有几个百分点，不会被误认）；
+        - 长宽比 1.15~1.7（像纸，A 系列是 1.414）、换算成毫米后短边 120~1300 mm。
+        """
+        try:
+            ss = self._ss(doc, "d2p_ins3")
+            ss.Select(5, 0, 0, self._short_array([0]), self._variant_array(["INSERT"]))
+            total = com_get(lambda: ss.Count, 0)
+        except Exception:
+            return []
+        if total < 2:
+            return []
+
+        groups: dict[tuple, list[tuple]] = {}
+
+        def read_one(idx: int):
+            e = ss.Item(idx)
+            mn, mx = e.GetBoundingBox()
+            return (str(e.Name), min(mn[0], mx[0]), min(mn[1], mx[1]),
+                    max(mn[0], mx[0]), max(mn[1], mx[1]))
+
+        for i in range(total):
+            r = com_get(lambda i=i: read_one(i), None)
+            if not r:
+                continue
+            name, x0, y0, x1, y1 = r
+            w, h = x1 - x0, y1 - y0
+            if w <= 0 or h <= 0:
+                continue
+            # 同一块名的尺寸一般完全一致，取整到「块单位的 0.1」归堆
+            groups.setdefault((name, round(w, 1), round(h, 1)), []).append((x0, y0, x1, y1))
+
+        std_longs = [max(v) for v in PAPER_SIZES.values()]
+
+        def pick_scale(w_units, h_units):
+            """挑一个比例，让这个块看起来像一张纸：返回 (scale, wmm, hmm) 或 None"""
+            best = None
+            for scale in KNOWN_SCALES:
+                wmm, hmm = w_units / scale, h_units / scale
+                lo, hi = min(wmm, hmm), max(wmm, hmm)
+                if not (120 <= lo <= 1300 and 150 <= hi <= 1500):
+                    continue
+                # 纸的长宽比：A 系列 1.414、美制 Letter 1.29。放宽到 1.15~1.7，
+                # 太方或太长的块（图例表格、说明条）一律不当图纸
+                if not (1.15 <= hi / max(lo, 1e-6) <= 1.7):
+                    continue
+                gap = min(abs(hi - v) for v in std_longs)
+                if best is None or gap < best[0]:
+                    best = (gap, scale, wmm, hmm)
+            if not best:
+                return None
+            return best[1], best[2], best[3]
+
+        best_group = None
+        for key, rects in groups.items():
+            if len(rects) < 2:
+                continue
+            name, w_units, h_units = key
+            scaled = pick_scale(w_units, h_units)
+            if not scaled:
+                continue
+            _scale, wmm, hmm = scaled
+            # 互不重叠：任两块的重叠面积不超过其中较小那块的一半
+            ok, sum_area = True, 0.0
+            for a in rects:
+                sum_area += (a[2] - a[0]) * (a[3] - a[1])
+            ux0 = min(r[0] for r in rects)
+            uy0 = min(r[1] for r in rects)
+            ux1 = max(r[2] for r in rects)
+            uy1 = max(r[3] for r in rects)
+            union_area = max(1.0, (ux1 - ux0) * (uy1 - uy0))
+            if sum_area / union_area < 0.85:
+                ok = False            # 只在每张纸的角落有个小图签，不是整张纸的模板
+            if ok:
+                for a in rects:
+                    for b in rects:
+                        if a is b:
+                            continue
+                        ix = min(a[2], b[2]) - max(a[0], b[0])
+                        iy = min(a[3], b[3]) - max(a[1], b[1])
+                        if ix <= 0 or iy <= 0:
+                            continue
+                        small = min((a[2] - a[0]) * (a[3] - a[1]),
+                                    (b[2] - b[0]) * (b[3] - b[1]))
+                        if ix * iy > 0.5 * small:
+                            ok = False
+                            break
+                    if not ok:
+                        break
+            if not ok:
+                continue
+            if best_group is None or len(rects) > len(best_group[1]):
+                best_group = ((name, wmm, hmm, _scale), rects)
+
+        if not best_group:
+            return []
+        (name, wmm, hmm, scale), rects = best_group
+        self.log(f"  （没找到图框块，但识别到 {len(rects)} 个同款整图纸块「{name}」"
+                 f"{round(wmm)}x{round(hmm)} mm，按它拆成 {len(rects)} 张图）")
+        return [{"paper": self._paper_label(wmm, hmm), "paper_mm": (wmm, hmm),
+                 "scale": scale, "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
+                for b in rects]
+
     def _dedupe_frames(self, frames: list[dict]) -> list[dict]:
         """同一张图既有块又有外框时只留一个（块优先，因为能确定图幅）"""
         def overlap(a, b):
@@ -817,8 +938,12 @@ class AcadPlotter:
         if not items:
             return "", ""
 
-        codes = [t for t in items if SHEET_CODE.match(t[3]) and not t[3].isdigit()]
-        texts = [t for t in items if not SHEET_CODE.match(t[3]) and len(t[3]) >= 2]
+        def is_code(s: str) -> bool:
+            return bool((SHEET_CODE.match(s) and not s.isdigit()) or LONG_CODE.match(s))
+
+        codes = [t for t in items if is_code(t[3])]
+        texts = [t for t in items if not is_code(t[3]) and len(t[3]) >= 2
+                 and not NOTE_PREFIX.match(t[3])]
         code = ""
         title = ""
         if codes:
@@ -854,6 +979,12 @@ class AcadPlotter:
         if not frames:
             frames = self._frames_from_polylines(doc)
             source = "矩形"
+        if not frames:
+            # 一个图框都认不出来：试试「整张图纸模板块」（MCB BOARD DETAILS 是这种画法，
+            # 4 张图并排、没有外框也没有分割线，靠重复出现的「图签1」块拆页）
+            frames = self._sheets_from_title_blocks(doc)
+            if frames:
+                source = "整图纸块"
         if not frames:
             return []
         frames = self._dedupe_frames(frames)
@@ -906,6 +1037,37 @@ class AcadPlotter:
             return float(m.group(1)), float(m.group(2))
         except ValueError:
             return None
+
+    def _apply_paper_choice(self, paper_mm):
+        """
+        用户在界面上选了纸张（A0~A4）时，用它替掉图纸自身的纸幅。
+
+        规则是「只放大、不缩小」：纸张比图纸大就按用户选的出（图会等比放大，
+        字更大、打印出来更清楚）；图纸本身比选定的纸还大，就保持图纸原来的尺寸——
+        缩小出图只会让字更小，跟「提高清晰度」正好相反。
+        返回 (纸幅 mm, 纸名标签)；没选或不用改时纸名标签为空。
+        """
+        choice = getattr(self, "paper_size", "") or ""
+        if choice in ("", "AUTO"):
+            return paper_mm, ""
+        want = PAPER_SIZES.get(choice)
+        if not want:
+            return paper_mm, ""
+        if not paper_mm:
+            return want, choice
+        sl, ss = max(paper_mm), min(paper_mm)
+        wl, ws = max(want), min(want)
+        if wl + 1 >= sl and ws + 1 >= ss:
+            return want, choice
+        return paper_mm, ""
+
+    def _note_paper_choice(self, tag: str, sheet_mm, used_mm) -> None:
+        """同一张纸只在日志里说一次，别每页刷一句"""
+        if not tag or tag in self._paper_noted:
+            return
+        self._paper_noted.add(tag)
+        self.log(f"    · 按界面选定的 {tag} 出图（{round(max(used_mm))}x{round(min(used_mm))} mm，"
+                 f"图纸 {round(max(sheet_mm))}x{round(min(sheet_mm))} mm 等比放大）")
 
     def _pick_media(self, layout, paper: str, paper_mm, want_landscape: bool,
                     allow_bleed: bool = False):
@@ -1085,6 +1247,16 @@ class AcadPlotter:
                     band = [b for b in cands
                             if 0.5 * paper_area <= (b[2] - b[0]) * (b[3] - b[1]) <= 2.0 * paper_area]
                     return self._union((band or cands) + [other])
+            # 图纸空间里的图形（图框线 + 标题栏 + 标注）本身差不多正好是一张纸：
+            # 它才是图框。有的图把视口画得比纸还宽（实测 10200-C-0：视口 1546mm 宽、
+            # 纸只有 1191mm），照视口出图就被压成半页空白。
+            if other and paper_area > 0:
+                ow, oh = other[2] - other[0], other[3] - other[1]
+                if ow > 5 and oh > 5:
+                    oar = max(ow, oh) / min(ow, oh)
+                    oarea = ow * oh / paper_area
+                    if abs(oar - want) <= 0.08 * want and 0.8 <= oarea <= 1.35:
+                        return other
             # 一个都不像图框（总览视口又大又扁、局部视口又小）：挑「面积最接近纸张」的
             # 那个视口——它通常就是真正画在纸上的视图；再和图纸空间里的图框线取并集。
             if vps:
@@ -1196,6 +1368,12 @@ class AcadPlotter:
         target = paper
         if (not fits_first) and min(pw0, ph0) < 0.7 * min(cw, ch):
             target = (cw, ch)
+        # 界面里指定了纸张（A0~A4）时，图装得下就按它出——纸大一圈，图就等比放大一圈，
+        # 字更大、打印更清楚。图纸本身比选定的纸大时 _apply_paper_choice 不会改，
+        # 免得把 A0 的图缩到 A1 反而更糊。
+        meta_mm, meta_tag = self._apply_paper_choice((cw, ch))
+        if meta_tag:
+            target = meta_mm
         # 纸张方向跟着图走：图是横的就用横版纸，别再靠「旋转 90°」硬塞，
         # 那样图会被纸边裁掉一半（实测就是这么出的问题）。
         # 用满幅无边距纸（full_bleed）的两种情况：
@@ -1227,6 +1405,8 @@ class AcadPlotter:
         # 这种就不再坚持 1:1，直接把图框铺满纸张。
         fill = (cw * ch / (pw * ph)) if pw * ph else 0.0
         keep_scale = fits and fill >= 0.80
+        if meta_tag:
+            self._note_paper_choice(meta_tag, (cw, ch), (pw, ph))
 
         # 窗口四周统一留 1mm：出图时图框线不会正好压在可打印区边界上（否则线会被裁掉一半）
         pad = 1.0
@@ -1293,20 +1473,25 @@ class AcadPlotter:
             pass
         w, h = sheet["x1"] - sheet["x0"], sheet["y1"] - sheet["y0"]
         want_landscape = w >= h
+        # 用户指定了纸张（界面上的「纸张大小」）就用它，只放大不缩小
+        meta_mm, meta_tag = self._apply_paper_choice(sheet.get("paper_mm"))
         # 模型空间的图一律「布满图纸」出图，所以配满幅无边距纸：普通纸 5/17 mm 的
         # 可打印边距会把纸边那圈内容裁掉，也让整页四周多出一圈白边。
         media, media_landscape, media_exact = self._pick_media(
-            model, sheet["paper"], sheet.get("paper_mm"), want_landscape, allow_bleed=True)
+            model, sheet["paper"], meta_mm, want_landscape, allow_bleed=True)
         if not media:
             media, media_landscape, media_exact = self._pick_media(
-                model, sheet["paper"], sheet.get("paper_mm"), want_landscape)
+                model, sheet["paper"], meta_mm, want_landscape)
         if media:
             try:
                 model.CanonicalMediaName = media
             except Exception:
                 pass
-            if not media_exact:
+            if meta_tag and sheet.get("paper_mm"):
+                self._note_paper_choice(meta_tag, sheet["paper_mm"], meta_mm)
+            elif not media_exact:
                 self.log(f"    · 图幅 {sheet['paper']} 没有对应纸张，按 {media} 缩放输出")
+
 
         # 注意顺序：必须先设置窗口范围，再切到「按窗口出图」。
         # 反过来时，如果图纸原有的窗口范围是空的（很多图 PlotType=0 显示），
@@ -1421,15 +1606,20 @@ class AcadPlotter:
             plot.PlotToFile(temp_path, cfg)     # ← 传设备名，且写临时扩展名
             return self._wait_file(temp_path, timeout=20)
 
+        # 页面设置里的出图窗口比纸还大：照它出图一定在纸上留一大片空白，
+        # 而且这个窗口本身就没有意义，直接按图纸内容重新框定再出（比出完再判断快得多）。
+        window_bad = self._window_overflows_paper(layout, orig_paper)
+
         for cfg in plans:
             fitted = False
-            if cfg.strip().lower() != orig_cfg.strip().lower():
+            if (cfg.strip().lower() != orig_cfg.strip().lower()) or window_bad:
                 # 换了打印设备：先把纸张按原尺寸还原；换设备后原来的页面设置
                 # （尤其是「旋转」和可打印边距）含义会变，所以再按图纸内容
                 # 重新框一次窗口并居中，避免「图缩在一个角、其余大片空白」。
                 switch_to_pdf_device()
                 self._fit_layout_to_page(layout)
                 fitted = True
+                window_bad = False
             for _try in range(2):
                 try:
                     ok = plot_once(cfg)
@@ -1466,6 +1656,30 @@ class AcadPlotter:
             f"出图未生成文件（已尝试 {len(plans)} 种打印设备："
             + "、".join(plans) + (f"；最后错误：{last_err}" if last_err else "") + "）"
         )
+
+    @staticmethod
+    def _window_overflows_paper(layout, paper) -> bool:
+        """
+        页面设置里的「窗口」比纸张还大 → 照它出图必然在纸上空出一大片
+        （实测 10200-C-0：窗口 1690x841 mm、纸 1191x843 mm，图只占左半边 49%）。
+        图纸空间里的窗口坐标就是毫米，可以直接跟纸幅比。
+        """
+        if not paper:
+            return False
+        try:
+            if int(layout.PlotType) != 4:
+                return False
+            win = layout.GetWindowToPlot()
+            ll, ur = win[0], win[1]
+            ww = abs(float(ur[0]) - float(ll[0]))
+            wh = abs(float(ur[1]) - float(ll[1]))
+        except Exception:
+            return False
+        if ww <= 1 or wh <= 1:
+            return False
+        # 窗口的任一边都不该超过纸张的长边（正放/横放都算上，取宽松的那条）
+        limit = max(paper) * 1.08
+        return ww > limit or wh > limit
 
     @staticmethod
     def _pdf_is_blank(path: str) -> bool:
@@ -1507,6 +1721,7 @@ class AcadPlotter:
         self._fonts_repaired = False
         self._font_cache = None
         self._fit_noted = False
+        self._paper_noted = set()
 
     def _targets(self, doc) -> list[dict]:
         """
@@ -1838,7 +2053,7 @@ class Converter:
                  cancel: Optional[Callable[[], bool]] = None,
                  dry_run: bool = False, keep_acad: bool = False,
                  frames_mode: str = "auto", one_pdf: bool = True,
-                 order_pages: bool = True):
+                 order_pages: bool = True, paper_size: str = ""):
         self.src = os.path.abspath(src)
         # 允许直接把单个 .dwg 文件当作输入
         self.single_file = None
@@ -1856,8 +2071,10 @@ class Converter:
         self.keep_acad = keep_acad
         self.frames_mode = frames_mode
         self.one_pdf = bool(one_pdf)
-        # 合并模式下默认把 LAYOUT 图排第 1 页、BOM 图排第 2 页
+        # 合并模式下是否把 LAYOUT 图排第 1 页、BOM 图排第 2 页（界面默认不勾）
         self.order_pages = bool(order_pages)
+        # 出图纸张：'' / auto = 跟图纸走；A0~A4 = 不小于图纸的那张
+        self.paper_size = (paper_size or "").strip().upper()
         self.on_event = on_event or (lambda e: None)
         self.cancel = cancel or (lambda: False)
         self.dry_run = dry_run
@@ -2056,7 +2273,8 @@ class Converter:
         self._emit("scan_done", dwg_count=len(dwg_files))
 
         plotter = AcadPlotter(pc3=self.pc3, include_model=self.include_model,
-                              frames_mode=self.frames_mode, log=self._log)
+                              frames_mode=self.frames_mode,
+                              paper_size=self.paper_size, log=self._log)
         plotter.connect()
 
         counters = {"ok": 0, "fail": 0, "skip": 0}
@@ -2174,9 +2392,13 @@ def main(argv=None) -> int:
     parser.add_argument("--split", dest="one_pdf", action="store_false",
                         help="每张图纸各输出一个 PDF（旧方式）")
     parser.set_defaults(one_pdf=True)
-    parser.add_argument("--no-page-order", dest="order_pages", action="store_false",
-                        help="合并时不要自动调整页序（默认会把 LAYOUT 图排第 1 页、BOM 图排第 2 页）")
-    parser.set_defaults(order_pages=True)
+    parser.add_argument("--page-order", dest="order_pages", action="store_true",
+                        help="合并时把 LAYOUT 图排第 1 页、BOM 图排第 2 页（默认不排，保持图纸顺序）")
+    parser.add_argument("--no-page-order", dest="order_pages", action="store_false")
+    parser.set_defaults(order_pages=False)
+    parser.add_argument("--paper", default="A1", choices=["auto", "A0", "A1", "A2", "A3", "A4"],
+                        help="出图纸张，默认 A1：图纸比它小就等比放大（字更清楚），"
+                             "比它大就保持图纸原尺寸；选 auto 则完全跟着图纸走")
     parser.add_argument("--keep-acad", action="store_true",
                         help="转换完成后保留 AutoCAD 进程（下次启动更快）")
     parser.add_argument("--dry-run", action="store_true", help="只列出会生成哪些 PDF，不出图")
@@ -2197,7 +2419,7 @@ def main(argv=None) -> int:
 
     if args.check:
         plotter = AcadPlotter(pc3=args.pc3, include_model=args.include_model,
-                              log=print)
+                              paper_size=getattr(args, "paper", ""), log=print)
         try:
             plotter.connect()
         except Exception as exc:                        # noqa: BLE001
@@ -2220,6 +2442,7 @@ def main(argv=None) -> int:
         pc3=args.pc3, on_event=on_event, dry_run=args.dry_run,
         keep_acad=args.keep_acad, frames_mode=args.frames_mode,
         one_pdf=args.one_pdf, order_pages=args.order_pages,
+        paper_size=args.paper,
     )
     try:
         summary = conv.run()

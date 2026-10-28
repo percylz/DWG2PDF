@@ -23,16 +23,26 @@ Double-click **`DWG2PDF.exe`** — your browser opens the control page:
 3. Choose **one PDF per DWG**:
    - **Merge into a single multi-page PDF** (default) — one page per sheet, named after the DWG;
    - **One PDF per sheet** — named after the sheet;
-4. Optionally untick **“LAYOUT sheet first, BOM sheet second when merging”** (on by default, see below);
-5. Optionally set a **filename prefix**, e.g. `A-`;
-6. Click **Start** and watch the log. When it finishes, open the output folder directly from the page.
+4. Optionally tick **“LAYOUT sheet first, BOM sheet second when merging”** (**off by default since v2.3.0**, see below);
+5. **Paper size** defaults to **A1**: a sheet smaller than A1 (an A3/A4 panel or system diagram, say) is scaled
+   **up** to A1, which makes the text bigger and the print sharper; a sheet larger than A1 (an A0 layout) keeps
+   its own size and is **never shrunk**. A0 / A2 / A3 / A4 are available, plus *Auto (use the sheet's own size)*;
+6. Optionally set a **filename prefix**, e.g. `A-`;
+7. Click **Start** and watch the log. When it finishes, open the output folder directly from the page.
 
-> **Page-order rule (on by default since v2.0.1):** when merging into a single PDF, the app moves the
+> **Page-order rule (available since v2.0.1, off by default since v2.3.0):** when this is ticked and several
+> sheets are merged into a single PDF, the app moves the
 > **LAYOUT (arrangement) sheet to page 1** and the **BOM (bill of materials) sheet to page 2**; every other
 > sheet keeps its original order. It looks at the sheet name (layout name / title-block title) first and then
 > at the text inside that page (`LAYOUT` / `LAYOU` / `布置图`, `BOM` / `BILL OF MATERIAL` / `物料清单` / `设备清单`).
 > If nothing is recognised, or more than one sheet matches the same type, the original order is kept and the log
-> says so — the app never guesses. Untick the box or pass `--no-page-order` to disable it.
+> says so — the app never guesses. Tick the box or pass `--page-order` to enable it; without it the PDF simply
+> follows the sheet order (the v2.3.0 default).
+
+> **Paper size (v2.3.0):** size up, never down — when the paper is larger than the sheet the sheet is scaled up
+> to fill it (bigger text, sharper print); when the sheet is larger than the chosen paper it keeps its own size
+> (shrinking would only make it blurrier). The log prints *“plotting on the A1 paper you selected (841x594 mm,
+> sheet … scaled up)”* once per paper size.
 
 > The *Browse* button opens the app's own folder picker (large window, large text).
 > Left side: common locations and drive letters. Middle: double-click to enter a folder, single click to select.
@@ -85,7 +95,9 @@ python dwg2pdf.py -s "D:\Projects\Architecture\Building-A.dwg" -o "D:\Plot\PDF"
 | `--pc3` | Force a plot device. Default `DWG To PDF.pc3`. |
 | `--one-pdf` | One multi-page PDF per DWG (the default; may be omitted). |
 | `--split` | One PDF per sheet (the behaviour before v2.0). |
-| `--no-page-order` | Keep the original page order when merging (default puts the LAYOUT sheet on page 1 and the BOM sheet on page 2). |
+| `--paper A0..A4\|auto` | Output paper size, default `A1` (size up, never down); `auto` follows each sheet's own size |
+| `--page-order` | Put the LAYOUT sheet on page 1 and the BOM sheet on page 2 when merging (off by default) |
+| `--no-page-order` | Keep the original page order (the default; spelled out for scripts) |
 | `--dry-run` | List the files that would be produced; plot nothing. |
 | `--check` | Only check that AutoCAD is reachable and count the DWGs. |
 | `--keep-acad` | Keep the AutoCAD process alive after conversion (faster next start). |
@@ -100,7 +112,7 @@ Two cases; the app decides automatically, and the **one PDF per DWG** switch dec
 
 | Setting | Result | Filename |
 |---------|--------|----------|
-| **Merge into one PDF** (default) | One DWG → **one multi-page PDF**, one page per sheet, each page keeps its own paper size (mixed A0/A1/A3 is fine); by default the LAYOUT sheet goes to page 1 and the BOM sheet to page 2, the rest keep sheet order | the **DWG name** (prefix supported) |
+| **Merge into one PDF** (default) | One DWG → **one multi-page PDF**, one page per sheet, each page keeps its own paper size (mixed A0/A1/A3 is fine); the order is the sheet order (only reordered when *LAYOUT first, BOM second* is ticked) | the **DWG name** (prefix supported) |
 | **One PDF per sheet** (old behaviour) | One DWG → N single-page PDFs | the **sheet name** (layout or title-block title) |
 
 **1) Sheets live on layouts** → plotted layout by layout, then merged or kept separate as chosen.
@@ -161,7 +173,7 @@ Before merging, every sheet is classified:
 - A page containing **both** `LAYOUT` and `BOM` (a layout sheet whose title block prints a BOM field) counts as
   *other*, so it is never moved by mistake.
 - Only the merged PDF is reordered; *one PDF per sheet* is unaffected.
-- Disable: untick the box in the UI, or pass `--no-page-order`.
+- Enable: tick the box in the UI, or pass `--page-order` (off by default since v2.3.0).
 
 ## 4. Naming rules
 
@@ -245,6 +257,9 @@ copy it back over the one in this folder. Rebuilding needs Python plus `pip inst
 | Every PDF popped open in a reader while converting | Fixed in v1.2: the app writes a `.part` temp file and renames it, so no reader is launched |
 | `.part` files left in the output folder | Leftovers from a forced interruption — delete them. A re-run of the same sheet cleans them up |
 | Merging into one PDF fails | It falls back to one file per sheet — nothing is lost. The log shows `！合并成一个 PDF 失败：…`. Usual cause: `pypdf` missing in source mode (`pip install pypdf`) |
+| Three or four sheets crammed onto one page, with no frame and no dividing lines | Those sheets are whole drawings packed into one block (frame + title block + content) and copied side by side; model space has no frame at all. Since v2.3.0 the app looks for same-name, same-size, non-overlapping blocks that cover ≥85% of their union and splits them one page each (4 side by side → 4 pages). If the blocks differ in name or size it still plots one page |
+| The drawing only fills the left half of the page, the right half is blank | The page setup's plot window is larger than the paper (1690×841 mm on a 1191×843 mm A0), so a 1:1 plot covers only half the sheet. Since v2.3.0 the window is checked before plotting and re-framed from the layout content (49.6% → 100%) |
+| The printed text is too small to read | Raise **Paper size** to A1 or A0: a sheet smaller than the paper is scaled up (an A4 detail on A1 is about 2.8×), while a larger sheet keeps its own size. Choose *Auto* to stick to each sheet's own paper |
 | Page order is not what I expected | Since v2.1.1 the page order is the **layout tab order** (`布局1` → page 1, `布局2` → page 2, …), read from AutoCAD's `TabOrder`, so the alphabetical order of layout names no longer matters. The only exception is the *LAYOUT first, BOM second* option (on by default): those two sheets are pulled to the front when they are not already there |
 | There is a BOM / LAYOUT sheet, but the order did not change | ① The option is off (checkbox or `--no-page-order`); ② neither the sheet name nor the page text contains a recognisable keyword; ③ more than one sheet matches the same type — the log says *“page order not unique, keeping sheet order”*; ④ that page contains **both** `LAYOUT` and `BOM`, so it counts as *other*. To force a sheet to the front, rename the layout or sheet title so it contains `LAYOUT` or `BOM` in CAD |
 | The reorder promoted a page it should not have | Untick *“LAYOUT sheet first, BOM sheet second when merging”*, or pass `--no-page-order`, then convert again |
@@ -272,6 +287,7 @@ With `start.bat` you can also just close the console window.
 
 | Version | Notes |
 |---------|-------|
+| v2.3.0 | ①**Sheets made of tiled “whole-sheet” blocks are split too.** `KUL01-BLKA1-SC-E-70001~3…MCB BOARD DETAILS` packs frame + title block + content into one block (`图签1`) and copies it four times side by side in model space — no outer frame, no dividing lines, no A0–A4 frame block, so the old code treated the whole model space as one sheet and squeezed four sheets onto one page. When neither frame blocks nor frame rectangles are found, the app now looks for blocks with the same name and size that do not overlap and together cover ≥85% of their own union (four 267.5×189.2 mm blocks here) and splits them one page each. ②**A plot window wider than the paper no longer wastes half a page.** `10200-C-0` in `KUL01-BLKA1-DR-E-10200…LAYOUT` has a 1690×841 mm window on a 1191×843 mm sheet, so the drawing only covered the left half (49.6%). The window is now compared with the paper before plotting and re-framed from the layout content when it overflows (49.6% → 100.1%). ③**Paper-space geometry wins over an over-wide viewport** when deciding what the frame is. ④New UI option **Paper size** (A0–A4, default **A1**, plus *Auto*): sheets smaller than the chosen paper are scaled up (bigger text, sharper print), sheets larger keep their own size. ⑤*LAYOUT first, BOM second* is now **off by default** (`--page-order` enables it). ⑥Long drawing numbers such as `KUL01-BLKA1-SC-E-70001-Z` are recognised as codes, with the title taken from the cell above. Measured: MCB sheets 1 page → 4 pages (A1, 99.7% page fill each), DATAHALL LAYOUT page 1 49.6% → 100.1%, the other three pages unchanged at 100% |
 | v2.2.0 | ①**Landscape sheets are no longer cut in half.** `DWG To PDF` only exposes portrait media names (A0 is `841×1189`), and the old code compared the sheet against a landscape paper, so a 1:1 plot of a landscape sheet was clipped left/right and left wide white bands top/bottom (all 6 pages of `办公室-平面图20261023.dwg`). The real page size is now derived from **paper orientation + plot rotation**, and the 90° rotation is applied **after** the window is set (the other order makes the drawing lie on its side) — the page comes out landscape and 1:1 fills it. ②**Several sheets side by side inside one big frame are split by their title blocks.** In `办公室-系统图20261023.dwg` three sheets are drawn side by side in model space inside one decorative frame, with no dividing lines, so the old logic treated them as a single 955×299 sheet and squeezed them onto one page. When the frame is very elongated (aspect ≥1.8 or ≤0.55) the app now looks for title-block blocks that repeat with the same name and size (here three `图签1` at 268×189 mm) and splits the frame accordingly → 3 pages. ③If the page setup names a paper far too small (Letter page setup for an A0 drawing) the paper is re-picked from the sheet's own size. ④Standard-size frames are no longer discarded by the “ignore objects larger than 4× the paper” rule (that rule used to cut off the frame and title block). ⑤When no viewport looks like a sheet, the one whose area is closest to the paper is used instead of the union with the overview viewport. Measured on the four Malaysia DWGs: `办公室-平面图` 6 pages went from “white bands + clipped sides” to full-bleed A0 landscape at 100%, `办公室-系统图` 1 page → 3 pages, `数据中心-平面图` 4 pages, `数据中心-系统图` 1 page → 3 pages; regressions DPRM-1 (17 pages), DPRM-2 (8), ICT2 (13) keep the same page count, paper size and fill ratio as the previous version |
 | v2.0 | ① **Selectable output layout**: the UI gained *one DWG →* with two choices — **merge into one multi-page PDF** (one page per sheet) or **one PDF per sheet**. In merge mode the file is named after the DWG, page order follows sheet order, and every page keeps its own paper size (mixed A0/A1/A3 stays mixed). CLI: `--one-pdf` (default) / `--split`. Merging uses pypdf; if the merge fails the app falls back to one file per sheet, so no result is lost. ② **Default output folder renamed** `PDF输出` → `PDF` |
 | v2.1.3 | **Pages no longer half-empty** (`1-IP DDC-DPRM-2.dwg` was 41%, nine pages of `2-IP DDC-AC- ICT2.dwg` were 39%). Two causes: ①besides the sheet viewport the layout also holds a 1:1 overview viewport, which the old window logic included, shrinking the whole page; ②the sheet frame itself is only 17% of the paper (122×88 mm frame on A4) and was still plotted 1:1, so the drawing sat in the middle. Now the sheet is the viewport whose aspect ratio matches the paper **and** whose area is 0.5–2× the paper (when a page really holds several tiled sheets their union is used — nothing is cropped); a frame below 80% of the paper is fitted to fill it; any scaling is done on full-bleed media with a 1 mm margin. Measured: DPRM-2 41%→96% on all 8 pages, 2-IP ICT2 39%→96% on all 16, DPRM-1 83%→99%; regression on `1-IP DDC-AC- ICT1.dwg` is identical page by page (0.00% ink difference) |
