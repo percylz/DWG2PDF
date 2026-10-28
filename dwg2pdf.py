@@ -317,6 +317,8 @@ class AcadPlotter:
         # 出图纸张：''/auto = 跟着图纸走；A0~A4 = 不小于图纸的那张（只放大、不缩小）
         self.paper_size = (paper_size or "").strip().upper()
         self._paper_noted: set[str] = set()
+        self._insert_cache = None      # (选择集, 块名→序号, 总数)
+        self._text_pos_cache = None    # (选择集, [(x, y, 序号)])
         self.log = log or (lambda msg: None)
         self.app = None
         self._pythoncom = None
@@ -501,6 +503,37 @@ class AcadPlotter:
         from win32com.client import VARIANT
         return VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_I2, list(vals))
 
+    def _insert_index(self, doc):
+        """
+        一次遍历，把所有块参照按「块名 → 序号列表」分好组，供识图复用。
+
+        单个 `ss.Item(i).Name` 是一次跨进程 COM 调用（实测 2.8 ms）：一份 20 MB 的
+        电气图有 2395 个块参照，逐个读名字就是 6~7 秒；图框识别和整图纸块识别都要
+        这份名单，所以只读一次、两个函数共用。
+
+        本来想用过滤选择集按块名一次选出来，但 AutoCAD COM 的 Select 过滤器在
+        Mode=5 下会被静默忽略（传了 filter 仍返回全部 2395 个），只能这样折中。
+        """
+        if self._insert_cache is not None:
+            return self._insert_cache
+        try:
+            ss = self._ss(doc, "d2p_ins_all")
+            ss.Select(5, 0, 0, self._short_array([0]), self._variant_array(["INSERT"]))
+            total = com_get(lambda: ss.Count, 0)
+        except Exception:
+            self._insert_cache = (None, {}, 0)
+            return self._insert_cache
+
+        by_name: dict[str, list] = {}
+        for i in range(total):
+            if total > 800 and i and i % 800 == 0:
+                self.log(f"    · 已读取 {i}/{total} 个块参照的名字…")
+            nm = com_get(lambda i=i: str(ss.Item(i).Name).strip(), "")
+            if nm:
+                by_name.setdefault(nm, []).append(i)
+        self._insert_cache = (ss, by_name, total)
+        return self._insert_cache
+
     def _name_may_be_frame(self, name: str) -> bool:
         """块名里是否可能写着图幅（A0-A4，或 1051-594 这种尺寸）"""
         if FRAME_BLOCK.match(name):
@@ -549,59 +582,53 @@ class AcadPlotter:
         这样 A1 加长（1051x594）这类非标准图幅也能识别。
         """
         frames = []
-        try:
-            ss = self._ss(doc, "d2p_ins")
-            ss.Select(5, 0, 0, self._short_array([0]), self._variant_array(["INSERT"]))
-        except Exception:
+        ss, by_name, total = self._insert_index(doc)
+        if ss is None or not by_name:
             return frames
-        import math
-        total = com_get(lambda: ss.Count, 0)
-        if not total:
-            return frames
-
-        def read_one(idx: int):
-            """读完一个块参照 → 图框字典；不是图框返回 None"""
-            e = ss.Item(idx)
-            name = str(e.Name).strip()
+        # 按「块名」遍历而不是按「块参照」遍历：2395 个块参照只有 42 个不同名字，
+        # 名字不像图框的整组跳过，连 InsertionPoint 都不用读。
+        for name, idxs in by_name.items():
             # 先看名字像不像图框，再决定要不要去翻块定义。
             # 建筑图里常有搬来的匿名块（A$Ca5f0b8dd 之类，块内上千个实体），
             # 逐个翻一遍会白白卡上几分钟。
             if not self._name_may_be_frame(name):
-                return None
+                continue
             rect = self._block_frame_rect(doc, name)
             if not rect:
-                return None
-            p = e.InsertionPoint
-            sx, sy = float(e.XScaleFactor), float(e.YScaleFactor)
-            rot = float(e.Rotation)
-            cos_r, sin_r = math.cos(rot), math.sin(rot)
-            xs, ys = [], []
-            for bx, by in ((rect[0], rect[1]), (rect[2], rect[1]),
-                           (rect[2], rect[3]), (rect[0], rect[3])):
-                bx, by = bx * sx, by * sy
-                xs.append(p[0] + bx * cos_r - by * sin_r)
-                ys.append(p[1] + bx * sin_r + by * cos_r)
-            w_units, h_units = abs(max(xs) - min(xs)), abs(max(ys) - min(ys))
-
-            if FRAME_BLOCK.match(name):
-                paper, paper_mm, scale = name.upper(), PAPER_SIZES[name.upper()], None
-            else:
-                parsed = self._paper_from_block_name(name, w_units, h_units)
-                if not parsed:
-                    return None
-                paper_mm, scale = parsed
-                paper = self._paper_label(*paper_mm)
-            return {"paper": paper, "paper_mm": paper_mm, "scale": scale,
-                    "x0": min(xs), "x1": max(xs),
-                    "y0": min(ys), "y1": max(ys)}
-
-        for i in range(total):
-            if total > 200 and i and i % 100 == 0:
-                self.log(f"    · 已检查 {i}/{total} 个块参照…")
-            f = com_get(lambda i=i: read_one(i), None)
-            if f:
-                frames.append(f)
+                continue
+            for idx in idxs:
+                f = com_get(lambda idx=idx: self._frame_from_insert(ss, idx, name, rect), None)
+                if f:
+                    frames.append(f)
         return frames
+
+    def _frame_from_insert(self, ss, idx: int, name: str, rect) -> Optional[dict]:
+        """一个块参照 + 它的块定义矩形 → 图框字典（模型坐标，已算缩放和旋转）"""
+        import math
+        e = ss.Item(idx)
+        p = e.InsertionPoint
+        sx, sy = float(e.XScaleFactor), float(e.YScaleFactor)
+        rot = float(e.Rotation)
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
+        xs, ys = [], []
+        for bx, by in ((rect[0], rect[1]), (rect[2], rect[1]),
+                       (rect[2], rect[3]), (rect[0], rect[3])):
+            bx, by = bx * sx, by * sy
+            xs.append(p[0] + bx * cos_r - by * sin_r)
+            ys.append(p[1] + bx * sin_r + by * cos_r)
+        w_units, h_units = abs(max(xs) - min(xs)), abs(max(ys) - min(ys))
+
+        if FRAME_BLOCK.match(name):
+            paper, paper_mm, scale = name.upper(), PAPER_SIZES[name.upper()], None
+        else:
+            parsed = self._paper_from_block_name(name, w_units, h_units)
+            if not parsed:
+                return None
+            paper_mm, scale = parsed
+            paper = self._paper_label(*paper_mm)
+        return {"paper": paper, "paper_mm": paper_mm, "scale": scale,
+                "x0": min(xs), "x1": max(xs),
+                "y0": min(ys), "y1": max(ys)}
 
     @staticmethod
     def _paper_label(width_mm: float, height_mm: float) -> str:
@@ -753,6 +780,21 @@ class AcadPlotter:
                 for b in rects]
 
     @staticmethod
+    def _is_pdf_device(cfg: str) -> bool:
+        """
+        图纸原本的打印设备是不是「真能出 PDF 的那个 .pc3」。
+
+        实测（KUL01-BLKA1-DR-E-10200）：原设备是同事自定义的 `M_PDF.pc3`，
+        名字里带 pdf、却是本机没有的绘图仪配置——调 PlotToFile 既不报错、也不
+        生成文件，只能等满超时才换成 DWG To PDF，每页白等 20 秒。
+        所以只认 AutoCAD 自带的两个 PDF 设备，其余一律直接用 DWG To PDF.pc3。
+        """
+        s = (cfg or "").strip().lower()
+        if not s.endswith(".pc3"):
+            return False
+        return ("dwg to pdf" in s) or ("autocad pdf" in s)
+
+    @staticmethod
     def _frame_area(f) -> float:
         return (f["x1"] - f["x0"]) * (f["y1"] - f["y0"])
 
@@ -771,33 +813,9 @@ class AcadPlotter:
           「每张纸右下角放一个小图签」那种只有几个百分点，不会被误认）；
         - 长宽比 1.15~1.7（像纸，A 系列是 1.414）、换算成毫米后短边 120~1300 mm。
         """
-        try:
-            ss = self._ss(doc, "d2p_ins3")
-            ss.Select(5, 0, 0, self._short_array([0]), self._variant_array(["INSERT"]))
-            total = com_get(lambda: ss.Count, 0)
-        except Exception:
+        ss, by_name, total = self._insert_index(doc)
+        if ss is None or total < 2:
             return []
-        if total < 2:
-            return []
-
-        groups: dict[tuple, list[tuple]] = {}
-
-        def read_one(idx: int):
-            e = ss.Item(idx)
-            mn, mx = e.GetBoundingBox()
-            return (str(e.Name), min(mn[0], mx[0]), min(mn[1], mx[1]),
-                    max(mn[0], mx[0]), max(mn[1], mx[1]))
-
-        for i in range(total):
-            r = com_get(lambda i=i: read_one(i), None)
-            if not r:
-                continue
-            name, x0, y0, x1, y1 = r
-            w, h = x1 - x0, y1 - y0
-            if w <= 0 or h <= 0:
-                continue
-            # 同一块名的尺寸一般完全一致，取整到「块单位的 0.1」归堆
-            groups.setdefault((name, round(w, 1), round(h, 1)), []).append((x0, y0, x1, y1))
 
         std_longs = [max(v) for v in PAPER_SIZES.values()]
 
@@ -819,6 +837,47 @@ class AcadPlotter:
             if not best:
                 return None
             return best[1], best[2], best[3]
+
+        def bbox_of(idx: int):
+            e = ss.Item(idx)
+            mn, mx = e.GetBoundingBox()
+            return (min(mn[0], mx[0]), min(mn[1], mx[1]),
+                    max(mn[0], mx[0]), max(mn[1], mx[1]))
+
+        # 先按块名分组、每组只抽 2 个实例算包围盒：尺寸对不上、或换算成毫米后
+        # 长宽比不像纸的组直接扔掉。否则 2000 多个设备符号（每个包围盒 2.9 ms）
+        # 光算包围盒就要 7 秒，而我们只关心那几个「整张图纸」块。
+        groups: dict[tuple, list[tuple]] = {}
+        for name, idxs in by_name.items():
+            if len(idxs) < 2:
+                continue
+            sample = []
+            for idx in idxs[:2]:
+                b = com_get(lambda idx=idx: bbox_of(idx), None)
+                if b:
+                    sample.append(b)
+            if len(sample) < 2:
+                continue
+            w0, h0 = sample[0][2] - sample[0][0], sample[0][3] - sample[0][1]
+            w1, h1 = sample[1][2] - sample[1][0], sample[1][3] - sample[1][1]
+            if w0 <= 0 or h0 <= 0:
+                continue
+            # 同一块名的尺寸必须一致（差 ≤2%），否则不是「同一张模板复制出来的」
+            if abs(w1 - w0) > w0 * 0.02 or abs(h1 - h0) > h0 * 0.02:
+                continue
+            if not pick_scale(w0, h0):
+                continue
+            for idx in idxs:
+                b = com_get(lambda idx=idx: bbox_of(idx), None)
+                if not b:
+                    continue
+                w, h = b[2] - b[0], b[3] - b[1]
+                if w <= 0 or h <= 0:
+                    continue
+                # 同一块名的尺寸一般完全一致，取整到「块单位的 0.1」归堆
+                groups.setdefault((name, round(w, 1), round(h, 1)), []).append(b)
+
+        # 顺序说明：pick_scale 已经挑过，这里不再重复筛；后续按覆盖面积挑最佳组
 
         best_group = None
         for key, rects in groups.items():
@@ -886,6 +945,32 @@ class AcadPlotter:
                 kept.append(f)
         return kept
 
+    def _text_positions(self, doc):
+        """
+        只读所有文字的插入点（不读内容），并缓存。
+
+        实测一份 2.6 MB 的电气图有 2317 个文字，每次 `.Item(i)` + `InsertionPoint`
+        + `TextString` + `Height` 约 1.3 ms，全读要 11.7 秒；而标题栏只占图框
+        右下角一小块、几十个字。所以先只读位置（约 6 秒，且整份图只做一次），
+        按范围筛出来再读内容——文字越多省得越多。
+        """
+        if getattr(self, "_text_pos_cache", None) is not None:
+            return self._text_pos_cache
+        ss = None
+        pos: list[tuple] = []
+        try:
+            ss = self._ss(doc, "d2p_alltxt")
+            ss.Select(5, 0, 0, self._short_array([0]), self._variant_array(["TEXT,MTEXT"]))
+            total = com_get(lambda: ss.Count, 0)
+            for i in range(total):
+                p = com_get(lambda i=i: ss.Item(i).InsertionPoint, None)
+                if p is not None:
+                    pos.append((float(p[0]), float(p[1]), i))
+        except Exception:
+            ss, pos = None, []
+        self._text_pos_cache = (ss, pos)
+        return self._text_pos_cache
+
     def _all_texts(self, doc) -> list[tuple]:
         """
         一次性取出模型空间里所有文字（x, y, 字高, 内容）并缓存。
@@ -933,8 +1018,20 @@ class AcadPlotter:
         w, h = f["x1"] - f["x0"], f["y1"] - f["y0"]
         rx0, ry0 = f["x1"] - w * 0.32, f["y0"]
         rx1, ry1 = f["x1"], f["y0"] + h * 0.25
-        items = [t for t in self._all_texts(doc)
-                 if rx0 <= t[0] <= rx1 and ry0 <= t[1] <= ry1]
+        items = []
+        ss, pos = self._text_positions(doc)
+        if ss is not None and pos:
+            for x, y, idx in pos:
+                if not (rx0 <= x <= rx1 and ry0 <= y <= ry1):
+                    continue
+                t = com_get(lambda idx=idx: self._one_text(ss, idx), _MISS)
+                if t is _MISS or not t:
+                    continue
+                items.append(t)
+        else:
+            # 位置索引没取到（AutoCAD 忙），退回全量读
+            items = [t for t in self._all_texts(doc)
+                     if rx0 <= t[0] <= rx1 and ry0 <= t[1] <= ry1]
         if not items:
             return "", ""
 
@@ -1527,7 +1624,7 @@ class AcadPlotter:
             except Exception as exc:                        # noqa: BLE001
                 last_err = str(exc)
                 continue
-            if self._wait_file(temp_path, timeout=30):
+            if self._wait_file(temp_path, timeout=8):
                 try:
                     os.replace(temp_path, pdf_path)
                     return
@@ -1592,7 +1689,7 @@ class AcadPlotter:
 
         # 候选方案：先用图纸原设备（显式传名），不行再用 DWG To PDF.pc3
         plans: list[str] = []
-        native_ok = (not self.force_pc3) and orig_cfg.lower().endswith(".pc3")
+        native_ok = (not self.force_pc3) and self._is_pdf_device(orig_cfg)
         if native_ok:
             plans.append(orig_cfg)
         if orig_cfg.strip().lower() != self.pc3.strip().lower():
@@ -1604,7 +1701,7 @@ class AcadPlotter:
         def plot_once(cfg: str) -> bool:
             _remove_quietly(temp_path)
             plot.PlotToFile(temp_path, cfg)     # ← 传设备名，且写临时扩展名
-            return self._wait_file(temp_path, timeout=20)
+            return self._wait_file(temp_path, timeout=2.5)
 
         # 页面设置里的出图窗口比纸还大：照它出图一定在纸上留一大片空白，
         # 而且这个窗口本身就没有意义，直接按图纸内容重新框定再出（比出完再判断快得多）。
@@ -1718,6 +1815,8 @@ class AcadPlotter:
     def _reset_cache(self):
         self._text_cache = None
         self._rect_cache = {}
+        self._insert_cache = None      # 块参照名字索引（每个 DWG 只建一次）
+        self._text_pos_cache = None    # 文字插入点索引
         self._fonts_repaired = False
         self._font_cache = None
         self._fit_noted = False
