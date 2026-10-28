@@ -66,6 +66,10 @@ PAPER_SIZES = {
 KNOWN_SCALES = (1, 2, 2.5, 5, 10, 20, 25, 30, 40, 50, 75, 100, 125, 150,
                 200, 250, 300, 400, 500, 600, 750, 1000, 1500, 2000)
 FRAME_BLOCK = re.compile(r"^A[0-4]$", re.I)          # 图框块命名约定：A0 / A1 / A2 / A3 / A4
+# PDF 内容流里的算子：出图判空用（见 AcadPlotter._pdf_page_is_empty）
+TEXT_SHOW = re.compile(rb"(?:\bTj\b|\bTJ\b)")          # 显示文字
+PATH_BUILD = re.compile(rb"(?:\d\s+[mlc]\b|\bre\b)")   # 画线/曲线/矩形
+
 SHEET_CODE = re.compile(r"^[A-Za-z]{1,4}[-_ ]?\d{1,4}$")   # 图号，如 FD-09 / A-101
 # 长图号：KUL01-BLKA1-SC-E-70001-Z 这种「好几段、用横线连」的编号（东南亚项目常用）
 LONG_CODE = re.compile(r"^[A-Za-z0-9]{1,10}(?:[-_][A-Za-z0-9]{1,10}){3,}$")
@@ -75,6 +79,10 @@ MTEXT_CODES = re.compile(r"\\[A-Za-z][^;\\]*;?|[{}]")       # MText 里的格式
 
 
 # ---------------------------------------------------------------- 数据结构
+
+class EmptySheet(Exception):
+    """这个布局出图后整页是空的（DWG 里的空布局），不该写进 PDF"""
+
 
 @dataclass
 class LayoutResult:
@@ -1625,6 +1633,9 @@ class AcadPlotter:
                 last_err = str(exc)
                 continue
             if self._wait_file(temp_path, timeout=8):
+                if self._pdf_page_is_empty(temp_path):
+                    _remove_quietly(temp_path)
+                    raise EmptySheet(f"图框 {sheet.get('paper', '')} 里没有内容（整页空白）")
                 try:
                     os.replace(temp_path, pdf_path)
                     return
@@ -1726,15 +1737,24 @@ class AcadPlotter:
                 if not ok:
                     last_err = "AutoCAD 未生成文件"
                     break
-                # 出成了一张空白页：说明页面设置里的纸和图纸实际内容对不上
-                # （内容跑到纸张矩形外面去了）。这时按图纸内容重新框定再出一次。
-                if not fitted and self._pdf_is_blank(temp_path):
+                stats = self._pdf_page_stats(temp_path)
+                # 出成了一张空白页：先按图纸内容重新框定再试一次（页面设置里的纸
+                # 跟图纸对不上时，内容会跑到纸张矩形外面，出图就是白的）。
+                if stats is not None and not fitted and self._stats_are_empty(stats):
                     self.log("    · 这一页是空白（页面设置与图纸内容不匹配），"
                              "按图纸内容重新框定后重出")
                     switch_to_pdf_device()
                     self._fit_layout_to_page(layout)
                     fitted = True
                     continue
+                # 重框过还是空白 → 这个布局本身就没内容（DWG 里留的空布局，
+                # AutoCAD 里手动打印同样是白纸），不该占 PDF 的一页。
+                if self._stats_are_empty(stats):
+                    _remove_quietly(temp_path)
+                    raise EmptySheet(f"{layout_name} 是空布局（整页没有图形和文字）")
+                if self._stats_are_sparse(stats):
+                    self.log(f"    · 布局 {layout_name} 几乎没有图形，只出到图框和文字，"
+                             f"请核对（多半是视口没内容、图层被关掉或外部参照丢了）")
                 try:
                     os.replace(temp_path, pdf_path)
                     return
@@ -1779,27 +1799,73 @@ class AcadPlotter:
         return ww > limit or wh > limit
 
     @staticmethod
-    def _pdf_is_blank(path: str) -> bool:
+    def _pdf_page_is_empty(path: str) -> bool:
         """
-        判断刚出的 PDF 是不是「整页空白」：只看内容流是否为空。
-        读不了（没装 pypdf、文件还没写完）就当作不空白，绝不影响正常出图。
+        判断刚出的这一页是不是「整页空白」——一个图形一个字都没有。
+
+        实测（泰国 DEC 那批 DWG）页面内容流分层很清楚：
+          · 真图纸：文字算子 60~800 个、路径算子 6000~160000 个、流 170 KB~2.5 MB
+          · 空布局：文字算子 0 个、路径算子 10 个（只剩纸边那一个矩形）、流 203 字节
+        判据是「没有文字 + 路径极少 + 流很短」三条同时成立，跟真图纸之间隔着一个
+        数量级以上的余量，不会把稀疏但正常的图纸误判成空。
+
+        读不了（没装 pypdf、文件还没写完）一律当作不空——宁可多出一页空白，
+        也不能因为解析失败把真图纸丢掉。
+        """
+        stats = AcadPlotter._pdf_page_stats(path)
+        if stats is None:
+            return False
+        return AcadPlotter._stats_are_empty(stats)
+
+    @staticmethod
+    def _pdf_page_stats(path: str):
+        """
+        读一页 PDF，返回 (文字算子数, 路径算子数, 内容流字节数)。
+        读不了返回 None——调用方一律按「不空、正常」处理。
         """
         try:
+            import logging
             from pypdf import PdfReader
+            # AutoCAD 出的 PDF 里偶尔有重复键，pypdf 每读一页就打一条
+            # "Multiple definitions in dictionary" 到控制台，纯噪音，关掉
+            logging.getLogger("pypdf").setLevel(logging.ERROR)
         except Exception:
-            return False
+            return None
         try:
             reader = PdfReader(path)
             if not reader.pages:
-                return False
-            page = reader.pages[0]
-            contents = page.get_contents()
-            if contents is None:
-                return True
-            data = contents.get_data() or b""
-            return len(data.strip()) < 40
+                return None
+            contents = reader.pages[0].get_contents()
+            data = contents.get_data() if contents is not None else b""
         except Exception:
+            return None
+        if not data:
+            return (0, 0, 0)
+        return (len(TEXT_SHOW.findall(data)), len(PATH_BUILD.findall(data)), len(data))
+
+    @staticmethod
+    def _stats_are_empty(stats) -> bool:
+        """整页空白：一个字都没有，只剩纸边那一两条线"""
+        if not stats:
             return False
+        n_text, n_path, n_bytes = stats
+        if n_bytes >= 120000:              # 这么大的内容流不可能是空的
+            return False
+        if n_text > 0:                     # 有文字就一定不是空页
+            return False
+        return n_path < 1000
+
+    @staticmethod
+    def _stats_are_sparse(stats) -> bool:
+        """
+        有字、但几乎没有线条：典型是「只出到图框和标题栏，图本身没出来」
+        （视口里没内容、图层被关掉、参照文件丢失）。
+        实测真图纸最少也有 5776 个路径算子、106 KB 内容流，这里的门槛留了 2~4 倍余量。
+        """
+        if not stats:
+            return False
+        n_text, n_path, n_bytes = stats
+        return n_text > 0 and n_path < 2500 and n_bytes < 90000
 
     @staticmethod
     def _wait_file(path: str, timeout: float = 30.0) -> bool:
@@ -2006,6 +2072,10 @@ class AcadPlotter:
                         com_retry(lambda t=target, p=pdf_path: self._plot_sheet(doc, t, p))
                     else:
                         com_retry(lambda n=name, p=pdf_path: self._plot_one(doc, n, p))
+                except EmptySheet:
+                    results.append(LayoutResult(win_path, name, "", "empty",
+                                                "空布局，已跳过"))
+                    continue
                 except Exception as exc:          # noqa: BLE001
                     results.append(LayoutResult(win_path, name, pdf_path, "fail",
                                                 f"出图失败：{_humanize_com_error(exc)}"))
@@ -2308,8 +2378,11 @@ class Converter:
                 raw = plotter.export_drawing(dwg, namer, on_sheet=on_sheet)
 
             ok = [r for r in raw if r.status == "ok" and r.pdf and os.path.isfile(r.pdf)]
-            bad = [r for r in raw if r not in ok]
+            empty = [r for r in raw if r.status == "empty"]
+            bad = [r for r in raw if r not in ok and r not in empty]
             if not ok:
+                if empty:
+                    return empty
                 return raw or [LayoutResult(dwg, "", "", "fail",
                                             "没有可导出的图纸（该文件没有布局）")]
 
@@ -2338,9 +2411,12 @@ class Converter:
 
             size_mb = os.path.getsize(final) / 1024 / 1024
             msg = f"{pages} 页 · {size_mb:.1f} MB"
+            if empty:
+                msg += f"，已跳过 {len(empty)} 个空布局"
             if bad:
                 msg += f"，另有 {len(bad)} 张未出图"
-            return [LayoutResult(dwg, f"共 {pages} 张图纸", final, "ok", msg)] + bad
+            return (empty + [LayoutResult(dwg, f"共 {pages} 张图纸", final, "ok", msg)]
+                    + bad)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -2376,7 +2452,7 @@ class Converter:
                               paper_size=self.paper_size, log=self._log)
         plotter.connect()
 
-        counters = {"ok": 0, "fail": 0, "skip": 0}
+        counters = {"ok": 0, "fail": 0, "skip": 0, "empty": 0}
         preview_count = 0
         try:
             for file_no, dwg in enumerate(dwg_files, 1):
@@ -2444,6 +2520,10 @@ class Converter:
                         self._log(f"  预览 → {fname}   （图纸：{r.layout}）")
                     elif r.status == "skip":
                         self._log(f"  - 跳过 {fname}")
+                    elif r.status == "empty":
+                        # 空布局：DWG 里留着、但页面上一个图形一个字都没有，
+                        # 出成 PDF 就是一张白纸，占着页数反而碍事，直接不出页。
+                        self._log(f"  - 空布局不出页：{r.layout}")
                     else:
                         self._log(f"  × {r.layout or os.path.basename(r.dwg)}：{r.message}")
                     self._emit("result", result=r.to_dict())
@@ -2455,8 +2535,9 @@ class Converter:
         if self.dry_run:
             self._log(f"预览结束：实际会生成 {preview_count} 个 PDF（本次未出图）")
         else:
+            tail = f"，空布局 {counters['empty']} 个已跳过" if counters.get("empty") else ""
             self._log(f"完成：成功 {counters['ok']} 个，跳过 {counters['skip']} 个，"
-                      f"失败 {counters['fail']} 个")
+                      f"失败 {counters['fail']} 个{tail}")
         self._emit("done", results=[r.to_dict() for r in self.results], **summary)
         return {**summary, "results": [r.to_dict() for r in self.results]}
 
