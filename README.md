@@ -224,11 +224,15 @@ Illegal filename characters (`\ / : * ? " < > |`) are replaced with `_`.
 
 | Item | Requirement |
 |------|-------------|
-| OS | Windows (developed on Windows 10/11) |
-| CAD | AutoCAD 2013 or newer, **able to start normally and licensed** (developed against AutoCAD 2024). AutoCAD LT and other CAD apps (ZWCAD, GstarCAD…) are not supported — they expose no automation API |
+| OS | **64-bit** Windows 10 / 11 (the exe is a 64-bit PE; Win7/8 will not run it) |
+| CAD | Full AutoCAD 2013 or newer, **able to start normally and licensed** (developed against AutoCAD 2024). AutoCAD LT and other CAD apps (ZWCAD, GstarCAD…) are not supported — they expose no automation API. The installed AutoCAD must also be able to open the DWGs being converted (a 2020 install cannot open a DWG saved by 2024) |
+| Runtimes | **None needed.** The exe imports only `KERNEL32` / `USER32` / `GDI32` / `ADVAPI32` / `COMCTL32`; Python 3.13, the VC++ runtime, `pywin32` and `pypdf` are all bundled |
+| Browser | Any modern browser — the app listens on `127.0.0.1` only and opens the UI in your default browser. No internet access is used |
+| Permissions | The output folder must be writable (a `.part` file is written next to the target, then renamed), so read-only shares and `C:\Program Files` do not work. The app and AutoCAD must run at the same integrity level — if one is elevated and the other is not, UAC blocks the cross-process COM call |
 | Python | **Not needed with the exe.** Source mode needs Python 3.9+ with `pywin32` and `pypdf` |
 
 To run it on another PC, just copy `DWG2PDF.exe` (that PC still needs AutoCAD).
+Nothing has to be installed — no registry entries, no service, no installer; deleting the exe uninstalls it.
 
 To rebuild after changing the source, double-click `build_exe.bat`; the output is `dist\DWG2PDF.exe` —
 copy it back over the one in this folder. Rebuilding needs Python plus `pip install pyinstaller`.
