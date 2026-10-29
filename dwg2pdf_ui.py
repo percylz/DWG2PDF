@@ -39,7 +39,7 @@ DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
 
 # 版本号：启动时写进 run.log，/api/ping 也会返回，
 # 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 
 
 # ----------------------------------------------------------------- 全局状态
@@ -113,6 +113,10 @@ class Hub:
             return {"ok": False, "error": "这个文件夹里没有找到 .dwg 文件"
                                           + ("（已包含子文件夹）" if cfg.get("recursive", True) else "")
                                           + "，请确认路径。"}
+
+        # 手动输入的路径也算「上次干活的文件夹」，下次选文件夹直接从这儿开
+        remember("src", base_dir)
+        remember("out", out)
 
         self.cancel_event = threading.Event()
         with self.lock:
@@ -214,6 +218,85 @@ def pick_folder(title: str = "选择文件夹") -> str:
         return ""
 
 
+# ----------------------------------------------------------------- 记住上次位置
+
+_STATE_NAME = "dwg2pdf_state.json"
+
+
+def _state_paths() -> list[str]:
+    """状态文件候选路径：优先 exe 旁边（绿色版），不可写时退到用户目录"""
+    out = [os.path.join(DATA_DIR, _STATE_NAME)]
+    local = (os.environ.get("LOCALAPPDATA")
+             or os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+    out.append(os.path.join(local, "DWG2PDF", _STATE_NAME))
+    return out
+
+
+def _load_state() -> dict:
+    for p in _state_paths():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            continue
+    return {}
+
+
+def _save_state(patch: dict) -> None:
+    """只合并本次变化的键；写不进去就静默放弃（不能因为记不住位置影响出图）"""
+    if not patch:
+        return
+    data = _load_state()
+    changed = False
+    for k, v in patch.items():
+        if v and data.get(k) != v:
+            data[k] = v
+            changed = True
+    if not changed:
+        return
+    for p in _state_paths():
+        try:
+            d = os.path.dirname(p)
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, p)
+            return
+        except Exception:
+            continue
+
+
+def remember(kind: str, path: str) -> None:
+    """记住这次选定的文件夹（kind 为 src / out）"""
+    p = (path or "").strip()
+    if not p or not os.path.isdir(p):
+        return
+    kind = (kind or "").strip().lower()
+    patch = {"browse": p}
+    if kind in ("src", "out"):
+        patch[kind] = p
+    _save_state(patch)
+
+
+def start_dir(kind: str = "") -> str:
+    """这次该从哪个文件夹开始：该用途上次选的 → 上次浏览到的 → 用户目录"""
+    data = _load_state()
+    kind = (kind or "").strip().lower()
+    keys = ["browse", "src", "out"]
+    if kind in ("src", "out"):
+        keys.insert(0, kind)
+    for key in keys:
+        p = data.get(key) or ""
+        if p and os.path.isdir(p):
+            return p
+    home = os.path.expanduser("~")
+    return home if os.path.isdir(home) else ""
+
+
 # ----------------------------------------------------------------- 目录浏览
 
 _SKIP_DIRS = {"system volume information", "$recycle.bin", "recycler",
@@ -271,8 +354,14 @@ def _clean_path(raw: str) -> str:
     return os.path.abspath(path)
 
 
-def list_dir(raw: str) -> dict:
-    """列出某个文件夹下的子文件夹（供自绘选择器用）"""
+def list_dir(raw: str, kind: str = "") -> dict:
+    """列出某个文件夹下的子文件夹（供自绘选择器用）
+
+    raw 为空时从「上次打开过的文件夹」开始，让程序每次启动后
+    点「选择…」都直接落在上次干活的地方。
+    """
+    if not (raw or "").strip():
+        raw = start_dir(kind)
     path = _clean_path(raw)
     if not os.path.isdir(path):
         return {"ok": False, "error": "路径不存在或无法访问：" + path,
@@ -307,6 +396,7 @@ def list_dir(raw: str) -> dict:
     parent = os.path.dirname(path)
     if os.path.normcase(parent) == os.path.normcase(path):
         parent = ""                       # 已经在盘根，没有上一级
+    _save_state({"browse": path})         # 逛到哪儿记住哪儿，下次从这里接着开
     return {"ok": True, "path": path, "parent": parent, "dirs": dirs,
             "dwg_count": dwg, "places": _places(), "drives": _drives()}
 
@@ -420,13 +510,21 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/ls":
             target = unquote(query.get("path", ""))
-            self._json(list_dir(target))
+            kind = unquote(query.get("kind", ""))
+            self._json(list_dir(target, kind))
+            return
+
+        if path == "/api/lastdir":
+            self._json({"ok": True, "path": start_dir(unquote(query.get("kind", "")))})
             return
 
         if path == "/api/browse":
             kind = "src" if query.get("kind") == "src" else "out"
             title = "选择存放 DWG 的文件夹" if kind == "src" else "选择 PDF 输出文件夹"
-            self._json({"path": pick_folder(title)})
+            picked = pick_folder(title)
+            if picked:
+                remember(kind, picked)
+            self._json({"path": picked})
             return
 
         if path == "/api/openout":
@@ -456,6 +554,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(res)
         elif path == "/api/stop":
             self._json(HUB.stop())
+        elif path == "/api/remember":
+            body = self._read_json()
+            remember(str(body.get("kind") or ""), str(body.get("path") or ""))
+            self._json({"ok": True})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 

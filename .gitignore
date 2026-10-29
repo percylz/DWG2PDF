@@ -2,6 +2,8 @@
 run.log
 run.log.old
 start_error.log
+dwg2pdf_state.json
+dwg2pdf_state.json.tmp
 *.pdf
 *.part
 

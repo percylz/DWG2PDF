@@ -476,6 +476,32 @@ const norm = p => String(p || '').toLowerCase().replace(/[\\\/]+$/, '');
 
 let pk = { kind:'src', cur:'', sel:'', parent:'', items:[] };
 
+/* 记住上次选过的文件夹：本地存一份（同一个浏览器立刻生效），
+   后台也存一份（换端口 / 清缓存 / 重开程序都还在） */
+const LS_KEY = 'dwg2pdf.lastdir';
+function lsGet(kind){
+  try{ return (JSON.parse(localStorage.getItem(LS_KEY) || '{}')[kind]) || ''; }catch(e){ return ''; }
+}
+function lsPut(kind, path){
+  try{
+    const o = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+    o[kind] = path; o.browse = path;
+    localStorage.setItem(LS_KEY, JSON.stringify(o));
+  }catch(e){}
+}
+
+/* 选文件夹时的起始位置：当前输入框 → 该用途上次选的 → 上次浏览过的 */
+async function startPath(kind){
+  const cur = $(kind).value.trim();
+  if(cur) return cur;
+  const local = lsGet(kind) || lsGet('browse');
+  try{
+    const r = await fetch('/api/lastdir?kind=' + encodeURIComponent(kind)).then(x => x.json());
+    if(r && r.path) return r.path;
+  }catch(e){}
+  return local;
+}
+
 async function browse(kind){
   pk.kind = kind;
   pk.cur = ''; pk.sel = ''; pk.parent = ''; pk.items = [];
@@ -485,7 +511,7 @@ async function browse(kind){
   $('pkTip').textContent = '正在读取…';
   $('pkMask').classList.add('show');
   document.body.style.overflow = 'hidden';
-  await pkLoad($(kind).value.trim());
+  await pkLoad(await startPath(kind));
 }
 
 function pkClose(){
@@ -499,6 +525,11 @@ function pkOk(){
   const p = pk.sel || $('pkPath').value.trim();
   if(!p){ $('pkTip').innerHTML = '<b>请先选中一个文件夹</b>'; return; }
   $(pk.kind).value = p;
+  lsPut(pk.kind, p);
+  fetch('/api/remember', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({kind: pk.kind, path: p})
+  }).catch(() => {});
   if(pk.kind === 'src'){
     syncOut();                    // 输出目录跟着 DWG 文件夹走（用户手动指定过则不动）
   }else{
@@ -508,10 +539,11 @@ function pkOk(){
   if(!running) setStatus('已选择：' + p);
 }
 
-async function pkLoad(path){
+async function pkLoad(path, retried){
   let r = null;
   try{
-    r = await fetch('/api/ls?path=' + encodeURIComponent(path || '')).then(x => x.json());
+    r = await fetch('/api/ls?kind=' + encodeURIComponent(pk.kind)
+                    + '&path=' + encodeURIComponent(path || '')).then(x => x.json());
   }catch(e){}
   if(!r){
     $('pkTip').innerHTML = '<b>无法读取这个文件夹（服务没有响应）</b>';
@@ -519,6 +551,11 @@ async function pkLoad(path){
   }
   if(!r.ok){
     pkRenderSide(r.places || [], r.drives || []);
+    /* 记住的位置可能已经没了（U 盘拔了、文件夹改名、网络盘断开）→ 退回默认位置 */
+    if(path && !retried){
+      await pkLoad('', true);
+      return;
+    }
     $('pkTip').innerHTML = '<b>' + esc(r.error || '无法读取这个文件夹') + '</b>';
     return;
   }
@@ -527,6 +564,7 @@ async function pkLoad(path){
   pk.sel = r.path;
   $('pkPath').value = r.path;
   $('pkPicked').textContent = r.path;
+  lsPut(pk.kind, r.path);
   pkRenderSide(r.places || [], r.drives || []);
   pkRenderList(r);
 }
