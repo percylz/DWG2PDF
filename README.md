@@ -16,6 +16,21 @@ English | [简体中文](README.zh-CN.md)
 
 ---
 
+## Download
+
+Don't want to build it yourself? Grab **`DWG2PDF-portable.zip`** from
+[Releases](https://github.com/percylz/DWG2PDF/releases) (current: [v2.8.0](https://github.com/percylz/DWG2PDF/releases/tag/v2.8.0)).
+Unzip and you get `DWG2PDF.exe` plus quick-start notes in Chinese and English
+(`QUICKSTART.txt` / `QUICKSTART.en.txt`).
+
+- **Direct download**: <https://github.com/percylz/DWG2PDF/releases/latest/download/DWG2PDF-portable.zip>
+  — this link always resolves to the **latest** release, so it is safe to bookmark.
+- **Verify** (v2.8.0): `SHA-256 3b6a54ccb8b936b0883833256fa798c04405cb03d84998c19f2424d590356a3b`,
+  10,952,128 bytes — on Windows, `Get-FileHash .\DWG2PDF-portable.zip -Algorithm SHA256`.
+- **Requirements**: 64-bit Windows with a local AutoCAD installation. Portable, no Python needed.
+  Details (only five system DLLs, write permission, AutoCAD version matching) are in
+  [QUICKSTART.en.txt](QUICKSTART.en.txt).
+
 ## 1. Quick start (recommended: the `.exe`)
 
 Double-click **`DWG2PDF.exe`** — your browser opens the control page:

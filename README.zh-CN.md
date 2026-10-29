@@ -9,6 +9,19 @@
 
 ---
 
+## 下载
+
+不想自己打包就下现成的：到 [Releases](https://github.com/percylz/DWG2PDF/releases) 下载 **`DWG2PDF-portable.zip`**
+（当前版本：[v2.8.0](https://github.com/percylz/DWG2PDF/releases/tag/v2.8.0)），解压即得
+`DWG2PDF.exe` 加中英文快速上手说明（`QUICKSTART.txt` / `QUICKSTART.en.txt`）。
+
+- **直接下载**：<https://github.com/percylz/DWG2PDF/releases/latest/download/DWG2PDF-portable.zip>
+  —— 这个链接始终指向**最新版**，可以存成书签。
+- **校验**（v2.8.0）：`SHA-256 3b6a54ccb8b936b0883833256fa798c04405cb03d84998c19f2424d590356a3b`，
+  10,952,128 字节；PowerShell 里 `Get-FileHash .\DWG2PDF-portable.zip -Algorithm SHA256` 即可核对。
+- **运行要求**：Windows 64 位 + 本机已装 AutoCAD，免安装、不需要 Python。
+  环境细节（只依赖 5 个系统 DLL、写权限、AutoCAD 版本匹配）见 [QUICKSTART.txt](QUICKSTART.txt)。
+
 ## 一、怎么用（推荐：双击 exe）
 
 双击 **`DWG2PDF.exe`** → 浏览器自动打开操作界面：
