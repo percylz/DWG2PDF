@@ -41,6 +41,9 @@ import traceback
 from dataclasses import dataclass, asdict
 from typing import Callable, Optional
 
+# 双语文案：tr(中文, English)；语言由界面设置或启动参数决定，见 i18n.py
+from i18n import is_en, t as tr
+
 # ---------------------------------------------------------------- 常量
 
 DWG_TO_PDF = "DWG To PDF.pc3"          # AutoCAD 自带的 PDF 打印设备
@@ -185,7 +188,7 @@ def _merge_pdfs(paths: list[str], out_path: str) -> int:
     """
     paths = [p for p in paths if p and os.path.isfile(p)]
     if not paths:
-        raise RuntimeError("没有可合并的 PDF")
+        raise RuntimeError(tr("没有可合并的 PDF", "No PDF pages to merge"))
     tmp = out_path + TEMP_EXT
 
     # AutoCAD 出的 PDF 里常见重复的 /PageMode 之类的键，pypdf 会刷一堆告警，
@@ -226,8 +229,10 @@ def _merge_pdfs(paths: list[str], out_path: str) -> int:
             except ImportError:
                 continue
         if _pdf is None:
-            raise RuntimeError("缺少 PDF 合并库（pypdf 或 PyMuPDF），请先 "
-                               "pip install pypdf")
+            raise RuntimeError(tr("缺少 PDF 合并库（pypdf 或 PyMuPDF），请先 "
+                                 "pip install pypdf",
+                                 "PDF merge library missing (pypdf or PyMuPDF). "
+                                 "Run: pip install pypdf"))
         doc = _pdf.open()
         try:
             for p in paths:
@@ -239,7 +244,7 @@ def _merge_pdfs(paths: list[str], out_path: str) -> int:
             doc.close()
 
     if not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
-        raise RuntimeError("合并后没有生成文件")
+        raise RuntimeError(tr("合并后没有生成文件", "The merged PDF was not created"))
     os.replace(tmp, out_path)
     return pages
 
@@ -260,7 +265,7 @@ def safe_filename(name: str, maxlen: int = 120) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     s = s.strip(" .")                      # Windows 不允许结尾的点和空格
     if not s:
-        s = "未命名图纸"
+        s = tr("未命名图纸", "Untitled")
     if s.upper() in RESERVED_NAMES:        # CON / PRN 之类的保留名
         s = "_" + s
     if len(s) > maxlen:
@@ -341,10 +346,12 @@ class AcadPlotter:
             import pythoncom            # noqa: F401
             import win32com.client      # noqa: F401
         except ImportError:
-            raise RuntimeError(
+            raise RuntimeError(tr(
                 "缺少 pywin32 组件，无法调用 AutoCAD。\n"
-                "请在命令行执行：pip install pywin32"
-            )
+                "请在命令行执行：pip install pywin32",
+                "pywin32 is missing, so AutoCAD cannot be automated.\n"
+                "Run: pip install pywin32"
+            ))
 
         self._pythoncom = pythoncom
         pythoncom.CoInitialize()         # 工作线程里必须初始化 COM
@@ -368,15 +375,18 @@ class AcadPlotter:
                 except Exception as exc:      # noqa: BLE001
                     last_err = exc
             if self.app is None:
-                raise RuntimeError(
+                raise RuntimeError(tr(
                     "无法启动 AutoCAD。请确认已正确安装并已授权（未过试用期/已登录）。\n"
-                    f"最后一条错误：{last_err}"
-                )
+                    f"最后一条错误：{last_err}",
+                    "Cannot start AutoCAD. Make sure it is installed, licensed and able "
+                    "to start (trial not expired / signed in).\n"
+                    f"Last error: {last_err}"
+                ))
 
         try:
             self.version = str(self.app.Version)
         except Exception:
-            self.version = "未知"
+            self.version = tr("未知", "unknown")
 
         # 冷启动时 AutoCAD 的 COM 接口要过一会儿才真正可用；不等它，
         # 头几张图会报「Open.Layouts」「<unknown>.Item」这种看不出所以然的错。
@@ -403,8 +413,10 @@ class AcadPlotter:
             except Exception:
                 pass
 
-        self.log(f"已连接 AutoCAD {self.version}"
-                 f"（{'复用已打开的实例' if not self._owned else '新启动实例'}）")
+        self.log(tr(f"已连接 AutoCAD {self.version}"
+                    f"（{'复用已打开的实例' if not self._owned else '新启动实例'}）",
+                    f"Connected to AutoCAD {self.version} "
+                    f"({'reusing the running instance' if not self._owned else 'new instance started'})"))
 
     def _wait_ready(self, timeout: float = 180.0):
         """等 AutoCAD 的文档模型真正能应答（冷启动约 20~60 秒）"""
@@ -418,16 +430,19 @@ class AcadPlotter:
                 except Exception:
                     pass                       # 没打开图纸时会报错，属正常
                 if waiting:
-                    self.log(f"  AutoCAD 已就绪（等了 {time.time() - t0:.0f} 秒）")
+                    self.log(tr(f"  AutoCAD 已就绪（等了 {time.time() - t0:.0f} 秒）",
+                                f"  AutoCAD is ready (waited {time.time() - t0:.0f} s)"))
                 return
             except Exception:
                 pass
             if time.time() - t0 > timeout:
-                self.log("  ⚠ AutoCAD 长时间没有响应，仍继续尝试出图")
+                self.log(tr("  ⚠ AutoCAD 长时间没有响应，仍继续尝试出图",
+                            "  ⚠ AutoCAD has been unresponsive for a while; still trying to plot"))
                 return
             if not waiting:
                 waiting = True
-                self.log("  AutoCAD 还在启动，等它就绪…")
+                self.log(tr("  AutoCAD 还在启动，等它就绪…",
+                            "  AutoCAD is still starting up, waiting for it…"))
             time.sleep(1.5)
 
     # -------------------------------------------------- 内部工具
@@ -466,7 +481,9 @@ class AcadPlotter:
             picked.append((tab, i, name))
 
         if skipped:
-            self.log(f"  ! 有 {skipped} 个布局读不出来，已跳过（其余照常出图）")
+            self.log(tr(f"  ! 有 {skipped} 个布局读不出来，已跳过（其余照常出图）",
+                        f"  ! {skipped} layout(s) could not be read and were skipped "
+                        f"(the others are plotted as usual)"))
 
         # 取不到 TabOrder（个别版本会返回同一个值）时，退回按名字里的数字排序
         if len(picked) > 1 and len({t for t, _, _ in picked}) <= 1:
@@ -479,7 +496,8 @@ class AcadPlotter:
         # 只有模型空间、没有任何图纸布局的图（简单图常见）：按一张图纸输出，
         # 否则这种文件会「什么都没生成」，容易让人以为程序没工作。
         if not names and not self.include_model:
-            self.log("  （该文件没有图纸布局，按模型空间输出一张 Model.pdf）")
+            self.log(tr("  （该文件没有图纸布局，按模型空间输出一张 Model.pdf）",
+                        "  (no paper-space layout in this file — model space is plotted as one Model.pdf)"))
             names = ["Model"]
         return names
 
@@ -535,7 +553,8 @@ class AcadPlotter:
         by_name: dict[str, list] = {}
         for i in range(total):
             if total > 800 and i and i % 800 == 0:
-                self.log(f"    · 已读取 {i}/{total} 个块参照的名字…")
+                self.log(tr(f"    · 已读取 {i}/{total} 个块参照的名字…",
+                            f"    · read names of {i}/{total} block references…"))
             nm = com_get(lambda i=i: str(ss.Item(i).Name).strip(), "")
             if nm:
                 by_name.setdefault(nm, []).append(i)
@@ -712,7 +731,8 @@ class AcadPlotter:
 
         for i in range(total):
             if total > 500 and i and i % 200 == 0:
-                self.log(f"    · 已检查 {i}/{total} 条多段线…")
+                self.log(tr(f"    · 已检查 {i}/{total} 条多段线…",
+                            f"    · checked {i}/{total} polylines…"))
             f = com_get(lambda i=i: read_one(i), None)
             if f:
                 frames.append(f)
@@ -781,8 +801,10 @@ class AcadPlotter:
         if not best:
             return []
         (name, wmm, hmm), rects = best
-        self.log(f"  （外框里识别到 {len(rects)} 个同款图签块「{name}」{wmm}x{hmm} mm，按它拆成 "
-                 f"{len(rects)} 张图）")
+        self.log(tr(f"  （外框里识别到 {len(rects)} 个同款图签块「{name}」{wmm}x{hmm} mm，按它拆成 "
+                    f"{len(rects)} 张图）",
+                    f"  (found {len(rects)} identical title blocks \"{name}\" {wmm}x{hmm} mm "
+                    f"inside the outer frame — splitting into {len(rects)} sheets)"))
         return [{"paper": self._paper_label(wmm, hmm), "paper_mm": (wmm, hmm),
                  "scale": scale, "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
                 for b in rects]
@@ -934,8 +956,11 @@ class AcadPlotter:
         if not best_group:
             return []
         (name, wmm, hmm, scale), rects, idxs = best_group
-        self.log(f"  （没找到图框块，但识别到 {len(rects)} 个同款整图纸块「{name}」"
-                 f"{round(wmm)}x{round(hmm)} mm，按它拆成 {len(rects)} 张图）")
+        self.log(tr(f"  （没找到图框块，但识别到 {len(rects)} 个同款整图纸块「{name}」"
+                    f"{round(wmm)}x{round(hmm)} mm，按它拆成 {len(rects)} 张图）",
+                    f"  (no frame block found, but {len(rects)} identical full-sheet blocks "
+                    f"\"{name}\" {round(wmm)}x{round(hmm)} mm were found — splitting into "
+                    f"{len(rects)} sheets)"))
         self._warn_duplicate_blocks(ss, idxs, name)
         return [{"paper": self._paper_label(wmm, hmm), "paper_mm": (wmm, hmm),
                  "scale": scale, "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
@@ -987,10 +1012,16 @@ class AcadPlotter:
         for sig, pages in seen.items():
             if len(pages) < 2:
                 continue
-            where = "、".join(f"第 {p} 张" for p in pages)
-            extra = f"，{len(sig[1])} 项属性也一致" if sig[1] else ""
-            self.log(f"  ⚠ 疑似重复图框：{where}图内容完全相同"
-                     f"（块「{name}」{extra}），请核对图纸")
+            where = (", ".join(f"sheet {p}" for p in pages) if is_en()
+                     else "、".join(f"第 {p} 张" for p in pages))
+            if is_en():
+                extra = f", all {len(sig[1])} attributes match too" if sig[1] else ""
+            else:
+                extra = f"，{len(sig[1])} 项属性也一致" if sig[1] else ""
+            self.log(tr(f"  ⚠ 疑似重复图框：{where}图内容完全相同"
+                        f"（块「{name}」{extra}），请核对图纸",
+                        f"  ⚠ duplicate title block: {where} are identical"
+                        f" (block \"{name}\"{extra}) — please check the drawing"))
 
     def _dedupe_frames(self, frames: list[dict]) -> list[dict]:
         """同一张图既有块又有外框时只留一个（块优先，因为能确定图幅）"""
@@ -1135,16 +1166,16 @@ class AcadPlotter:
         返回按「从上到下、从左到右」排序的图纸列表。
         """
         frames = self._frames_from_blocks(doc)
-        source = "块"
+        source = tr("块", "blocks")
         if not frames:
             frames = self._frames_from_polylines(doc)
-            source = "矩形"
+            source = tr("矩形", "rectangles")
         if not frames:
             # 一个图框都认不出来：试试「整张图纸模板块」（MCB BOARD DETAILS 是这种画法，
             # 4 张图并排、没有外框也没有分割线，靠重复出现的「图签1」块拆页）
             frames = self._sheets_from_title_blocks(doc)
             if frames:
-                source = "整图纸块"
+                source = tr("整图纸块", "full-sheet blocks")
         if not frames:
             return []
         frames = self._dedupe_frames(frames)
@@ -1158,16 +1189,18 @@ class AcadPlotter:
                 sub = self._sheets_from_repeated_blocks(doc, f)
                 if len(sub) >= 2:
                     frames = sub
-                    source = "重复图签块"
+                    source = tr("重复图签块", "repeated title blocks")
         frames.sort(key=lambda f: (-round(f["y1"] / 100.0), f["x0"]))
         for i, f in enumerate(frames, 1):
             f["index"] = i
             f["title"], f["code"] = self._read_title_block(doc, f)
             if not f["title"]:
-                f["title"] = f["code"] or f"图纸{i:02d}"
+                f["title"] = f["code"] or tr(f"图纸{i:02d}", f"Sheet {i:02d}")
             f["name"] = f["title"]
-        self.log(f"  （按{source}识别出 {len(frames)} 张图纸："
-                 + "、".join(f"{f['paper']}" for f in frames) + "）")
+        self.log(tr(f"  （按{source}识别出 {len(frames)} 张图纸："
+                    + "、".join(f"{f['paper']}" for f in frames) + "）",
+                    f"  (found {len(frames)} sheet(s) by {source}: "
+                    + ", ".join(f"{f['paper']}" for f in frames) + ")"))
         return frames
 
     @staticmethod
@@ -1226,8 +1259,12 @@ class AcadPlotter:
         if not tag or tag in self._paper_noted:
             return
         self._paper_noted.add(tag)
-        self.log(f"    · 按界面选定的 {tag} 出图（{round(max(used_mm))}x{round(min(used_mm))} mm，"
-                 f"图纸 {round(max(sheet_mm))}x{round(min(sheet_mm))} mm 等比放大）")
+        self.log(tr(f"    · 按界面选定的 {tag} 出图（{round(max(used_mm))}x{round(min(used_mm))} mm，"
+                    f"图纸 {round(max(sheet_mm))}x{round(min(sheet_mm))} mm 等比放大）",
+                    f"    · plotting on {tag} as selected in the UI "
+                    f"({round(max(used_mm))}x{round(min(used_mm))} mm; the "
+                    f"{round(max(sheet_mm))}x{round(min(sheet_mm))} mm sheet is scaled up "
+                    f"proportionally)"))
 
     def _pick_media(self, layout, paper: str, paper_mm, want_landscape: bool,
                     allow_bleed: bool = False):
@@ -1454,8 +1491,10 @@ class AcadPlotter:
             except Exception:
                 pass
             if not exact:
-                self.log(f"    · 没找到 {round(orig_paper[0])}x{round(orig_paper[1])} mm 的纸，"
-                         f"改用 {media}")
+                self.log(tr(f"    · 没找到 {round(orig_paper[0])}x{round(orig_paper[1])} mm 的纸，"
+                            f"改用 {media}",
+                            f"    · no {round(orig_paper[0])}x{round(orig_paper[1])} mm paper "
+                            f"available, using {media}"))
             return exact
         return False
 
@@ -1587,24 +1626,36 @@ class AcadPlotter:
                 layout.StandardScale = 16                  # 1:1
                 if not getattr(self, "_fit_noted", False):
                     self._fit_noted = True
-                    self.log("    · 原打印设备不是 PDF 设备，页面设置已按图纸内容重新框定并居中"
-                             "（比例不变）")
+                    self.log(tr("    · 原打印设备不是 PDF 设备，页面设置已按图纸内容重新框定并居中"
+                                "（比例不变）",
+                                "    · the original plot device is not a PDF device; the page "
+                                "setup was re-fitted and centred on the drawing content "
+                                "(scale unchanged)"))
             else:
                 layout.UseStandardScale = True
                 layout.StandardScale = 0                   # 0 = 布满图纸
                 if fits:
-                    self.log(f"    · 图框只有 {round(cw)}x{round(ch)} mm，仅占 "
-                             f"{round(pw)}x{round(ph)} mm 纸张的 {fill * 100:.0f}%（页面设置"
-                             f"与图纸不匹配），已按图框铺满本页")
+                    self.log(tr(f"    · 图框只有 {round(cw)}x{round(ch)} mm，仅占 "
+                                f"{round(pw)}x{round(ph)} mm 纸张的 {fill * 100:.0f}%（页面设置"
+                                f"与图纸不匹配），已按图框铺满本页",
+                                f"    · the frame covers only {round(cw)}x{round(ch)} mm, i.e. "
+                                f"{fill * 100:.0f}% of the {round(pw)}x{round(ph)} mm paper "
+                                f"(page setup does not match the drawing); the frame was "
+                                f"fitted to fill the page"))
                 else:
-                    self.log(f"    · 图纸内容 {round(cw)}x{round(ch)} mm 比纸张 "
-                             f"{round(pw)}x{round(ph)} mm 大，已按「布满图纸」缩放到本页"
-                             f"（整张图完整、不裁切）")
+                    self.log(tr(f"    · 图纸内容 {round(cw)}x{round(ch)} mm 比纸张 "
+                                f"{round(pw)}x{round(ph)} mm 大，已按「布满图纸」缩放到本页"
+                                f"（整张图完整、不裁切）",
+                                f"    · the drawing is {round(cw)}x{round(ch)} mm, larger than "
+                                f"the {round(pw)}x{round(ph)} mm paper; it was scaled to "
+                                f"\"fit to paper\" (whole sheet, nothing cropped)"))
             # 旋转放到最后设：先设旋转再设窗口，窗口坐标会被当成「已旋转的坐标系」来解释，
             # 出图结果是横躺并被裁掉（实测）。顺序反了就是这个下场。
             layout.PlotRotation = rot
         except Exception as exc:                           # noqa: BLE001
-            self.log(f"    · 按图纸内容重设窗口失败，仍按原页面设置出图：{exc}")
+            self.log(tr(f"    · 按图纸内容重设窗口失败，仍按原页面设置出图：{exc}",
+                        f"    · could not re-fit the plot window to the drawing content; "
+                        f"plotting with the original page setup: {exc}"))
 
     def _plot_sheet(self, doc, sheet: dict, pdf_path: str) -> None:
         """把模型空间里的一张图（按图框窗口 + 对应图幅）打印成一个 PDF"""
@@ -1614,7 +1665,7 @@ class AcadPlotter:
                 model = doc.Layouts.Item(i)
                 break
         if model is None:
-            raise RuntimeError("找不到模型空间布局")
+            raise RuntimeError(tr("找不到模型空间布局", "Model-space layout not found"))
 
         doc.ActiveLayout = model
         try:
@@ -1628,7 +1679,9 @@ class AcadPlotter:
             if not str(model.StyleSheet or "").strip():
                 model.StyleSheet = MONO_CTB
                 model.PlotWithPlotStyles = True
-                self.log(f"    · 图纸未设打印样式表，改用 {MONO_CTB} 输出（否则白字会看不见）")
+                self.log(tr(f"    · 图纸未设打印样式表，改用 {MONO_CTB} 输出（否则白字会看不见）",
+                            f"    · the drawing has no plot style table; using {MONO_CTB} "
+                            f"(otherwise white text would be invisible)"))
         except Exception:
             pass
         w, h = sheet["x1"] - sheet["x0"], sheet["y1"] - sheet["y0"]
@@ -1650,7 +1703,9 @@ class AcadPlotter:
             if meta_tag and sheet.get("paper_mm"):
                 self._note_paper_choice(meta_tag, sheet["paper_mm"], meta_mm)
             elif not media_exact:
-                self.log(f"    · 图幅 {sheet['paper']} 没有对应纸张，按 {media} 缩放输出")
+                self.log(tr(f"    · 图幅 {sheet['paper']} 没有对应纸张，按 {media} 缩放输出",
+                            f"    · no paper matches sheet size {sheet['paper']}; "
+                            f"plotting scaled onto {media}"))
 
 
         # 注意顺序：必须先设置窗口范围，再切到「按窗口出图」。
@@ -1690,7 +1745,9 @@ class AcadPlotter:
             if self._wait_file(temp_path, timeout=8):
                 if self._pdf_page_is_empty(temp_path):
                     _remove_quietly(temp_path)
-                    raise EmptySheet(f"图框 {sheet.get('paper', '')} 里没有内容（整页空白）")
+                    raise EmptySheet(tr(f"图框 {sheet.get('paper', '')} 里没有内容（整页空白）",
+                                        f"nothing inside the {sheet.get('paper', '')} sheet "
+                                        f"frame (blank page)"))
                 try:
                     os.replace(temp_path, pdf_path)
                     return
@@ -1700,13 +1757,16 @@ class AcadPlotter:
                         os.replace(temp_path, pdf_path)
                         return
                     except OSError:
-                        last_err = f"PDF 改名失败：{exc}"
+                        last_err = tr(f"PDF 改名失败：{exc}",
+                                      f"Failed to rename the PDF: {exc}")
                         continue
-            last_err = "AutoCAD 未生成文件"
+            last_err = tr("AutoCAD 未生成文件", "AutoCAD produced no file")
             time.sleep(1.0)
         _remove_quietly(temp_path)
-        raise RuntimeError(f"出图未生成文件（图幅 {sheet['paper']}"
-                           + (f"；最后错误：{last_err}" if last_err else "") + "）")
+        raise RuntimeError(tr(f"出图未生成文件（图幅 {sheet['paper']}"
+                              + (f"；最后错误：{last_err}" if last_err else "") + "）",
+                              f"No file was produced (sheet size {sheet['paper']}"
+                              + (f"; last error: {last_err}" if last_err else "") + ")"))
 
     def _plot_one(self, doc, layout_name: str, pdf_path: str) -> None:
         """
@@ -1790,14 +1850,16 @@ class AcadPlotter:
                     last_err = str(exc)
                     break
                 if not ok:
-                    last_err = "AutoCAD 未生成文件"
+                    last_err = tr("AutoCAD 未生成文件", "AutoCAD produced no file")
                     break
                 stats = self._pdf_page_stats(temp_path)
                 # 出成了一张空白页：先按图纸内容重新框定再试一次（页面设置里的纸
                 # 跟图纸对不上时，内容会跑到纸张矩形外面，出图就是白的）。
                 if stats is not None and not fitted and self._stats_are_empty(stats):
-                    self.log("    · 这一页是空白（页面设置与图纸内容不匹配），"
-                             "按图纸内容重新框定后重出")
+                    self.log(tr("    · 这一页是空白（页面设置与图纸内容不匹配），"
+                                "按图纸内容重新框定后重出",
+                                "    · the page came out blank (page setup does not match the "
+                                "drawing); re-fitting to the drawing content and plotting again"))
                     switch_to_pdf_device()
                     self._fit_layout_to_page(layout)
                     fitted = True
@@ -1806,10 +1868,15 @@ class AcadPlotter:
                 # AutoCAD 里手动打印同样是白纸），不该占 PDF 的一页。
                 if self._stats_are_empty(stats):
                     _remove_quietly(temp_path)
-                    raise EmptySheet(f"{layout_name} 是空布局（整页没有图形和文字）")
+                    raise EmptySheet(tr(f"{layout_name} 是空布局（整页没有图形和文字）",
+                                        f"{layout_name} is an empty layout "
+                                        f"(no graphics and no text on the page)"))
                 if self._stats_are_sparse(stats):
-                    self.log(f"    · 布局 {layout_name} 几乎没有图形，只出到图框和文字，"
-                             f"请核对（多半是视口没内容、图层被关掉或外部参照丢了）")
+                    self.log(tr(f"    · 布局 {layout_name} 几乎没有图形，只出到图框和文字，"
+                                f"请核对（多半是视口没内容、图层被关掉或外部参照丢了）",
+                                f"    · layout {layout_name} has almost no graphics — only the "
+                                f"frame and text were plotted, please check it (usually an empty "
+                                f"viewport, layers switched off, or a missing xref)"))
                 try:
                     os.replace(temp_path, pdf_path)
                     return
@@ -1820,14 +1887,17 @@ class AcadPlotter:
                         os.replace(temp_path, pdf_path)
                         return
                     except OSError:
-                        last_err = f"PDF 改名失败：{exc}"
+                        last_err = tr(f"PDF 改名失败：{exc}",
+                                      f"Failed to rename the PDF: {exc}")
                         break
 
         _remove_quietly(temp_path)
-        raise RuntimeError(
+        raise RuntimeError(tr(
             f"出图未生成文件（已尝试 {len(plans)} 种打印设备："
-            + "、".join(plans) + (f"；最后错误：{last_err}" if last_err else "") + "）"
-        )
+            + "、".join(plans) + (f"；最后错误：{last_err}" if last_err else "") + "）",
+            f"No file was produced (tried {len(plans)} plot device(s): "
+            + ", ".join(plans) + (f"; last error: {last_err}" if last_err else "") + ")"
+        ))
 
     @staticmethod
     def _window_overflows_paper(layout, paper) -> bool:
@@ -1964,18 +2034,27 @@ class AcadPlotter:
                         break
                     except Exception as exc:                # noqa: BLE001
                         if attempt >= 2:
-                            self.log(f"  × 图框识别出错：{_humanize_com_error(exc)}")
+                            self.log(tr(f"  × 图框识别出错：{_humanize_com_error(exc)}",
+                                        f"  × sheet detection failed: {_humanize_com_error(exc)}"))
                             break
                         wait = 2 * (attempt + 1)
-                        self.log(f"  · 识别图框时 AutoCAD 正忙，{wait} 秒后重试…")
+                        self.log(tr(f"  · 识别图框时 AutoCAD 正忙，{wait} 秒后重试…",
+                                    f"  · AutoCAD is busy while detecting sheets; "
+                                    f"retrying in {wait} s…"))
                         time.sleep(wait)
                 if sheets:
                     return sheets
                 if self.frames_mode == "frames":
-                    raise RuntimeError("已指定按图框拆分，但没识别到图框"
-                                       "（模型空间里需要有 A0-A4 图框块或标准图幅的矩形边框）")
-                self.log("  ! 没识别到图框，改为按图纸布局输出"
-                         "（这张图如果多张图纸都排在模型空间里，就会只出一张）")
+                    raise RuntimeError(tr("已指定按图框拆分，但没识别到图框"
+                                          "（模型空间里需要有 A0-A4 图框块或标准图幅的矩形边框）",
+                                          "Frame splitting was requested but no frame was found "
+                                          "(model space needs A0-A4 frame blocks or rectangles of "
+                                          "standard sheet size)"))
+                self.log(tr("  ! 没识别到图框，改为按图纸布局输出"
+                            "（这张图如果多张图纸都排在模型空间里，就会只出一张）",
+                            "  ! No frame detected; falling back to plotting one page per layout "
+                            "(if several sheets are laid out in model space, only one page "
+                            "will come out)"))
         return [{"name": n, "paper": "", "x0": None} for n in layouts]
 
     # -------------------------------------------------- 缺失字体修复
@@ -2064,8 +2143,10 @@ class AcadPlotter:
                 doc.Regen(1)          # 重生成后文字才有正确范围，才能被打印
             except Exception:
                 pass
-            self.log(f"    · 图纸有 {fixed} 个文字样式用了本机没有的字体，"
-                     f"已临时替换（否则这些字不会出图）")
+            self.log(tr(f"    · 图纸有 {fixed} 个文字样式用了本机没有的字体，"
+                        f"已临时替换（否则这些字不会出图）",
+                        f"    · {fixed} text style(s) use fonts missing on this machine; "
+                        f"temporarily substituted (otherwise that text would not plot)"))
         return fixed
 
     @staticmethod
@@ -2091,7 +2172,8 @@ class AcadPlotter:
             doc = com_retry(lambda: self.app.Documents.Open(win_path, True))
         except Exception as exc:                            # noqa: BLE001
             msg = _humanize_com_error(exc)
-            return [LayoutResult(win_path, "", "", "fail", f"打开图纸失败：{msg}")]
+            return [LayoutResult(win_path, "", "", "fail",
+                                 tr(f"打开图纸失败：{msg}", f"Failed to open the drawing: {msg}"))]
 
         try:
             self._reset_cache()
@@ -2112,7 +2194,8 @@ class AcadPlotter:
                         pass
                 if skip_existing and os.path.isfile(pdf_path) and os.path.getsize(pdf_path) > 0:
                     results.append(LayoutResult(win_path, name, pdf_path, "skip",
-                                                "PDF 已存在，已跳过"))
+                                                tr("PDF 已存在，已跳过",
+                                                   "PDF already exists — skipped")))
                     continue
 
                 os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
@@ -2129,11 +2212,13 @@ class AcadPlotter:
                         com_retry(lambda n=name, p=pdf_path: self._plot_one(doc, n, p))
                 except EmptySheet:
                     results.append(LayoutResult(win_path, name, "", "empty",
-                                                "空布局，已跳过"))
+                                                tr("空布局，已跳过",
+                                                   "Empty layout — skipped")))
                     continue
                 except Exception as exc:          # noqa: BLE001
                     results.append(LayoutResult(win_path, name, pdf_path, "fail",
-                                                f"出图失败：{_humanize_com_error(exc)}"))
+                                                tr(f"出图失败：{_humanize_com_error(exc)}",
+                                                   f"Plot failed: {_humanize_com_error(exc)}")))
                     continue
 
                 if self._wait_file(pdf_path):
@@ -2143,7 +2228,9 @@ class AcadPlotter:
                                                 f"{extra}{size_kb:.0f} KB"))
                 else:
                     results.append(LayoutResult(win_path, name, pdf_path, "fail",
-                                                "没有生成 PDF 文件（可能是图纸为空或打印设备不可用）"))
+                                                tr("没有生成 PDF 文件（可能是图纸为空或打印设备不可用）",
+                                                   "No PDF was created (the sheet may be empty or "
+                                                   "the plot device unavailable)")))
         finally:
             try:
                 com_retry(lambda: doc.Close(False), attempts=4)   # 不保存，保持原图不动
@@ -2159,7 +2246,8 @@ class AcadPlotter:
         try:
             doc = com_retry(lambda: self.app.Documents.Open(win_path, True))
         except Exception as exc:                        # noqa: BLE001
-            self.log(f"  × 打开失败：{_humanize_com_error(exc)}")
+            self.log(tr(f"  × 打开失败：{_humanize_com_error(exc)}",
+                        f"  × open failed: {_humanize_com_error(exc)}"))
             return []
         try:
             self._reset_cache()
@@ -2172,7 +2260,8 @@ class AcadPlotter:
                 pass
             time.sleep(0.2)
         return [LayoutResult(win_path, target["name"], pdf_path, "preview",
-                             f"图幅 {target['paper']}" if target.get("paper") else "预览")
+                             tr(f"图幅 {target['paper']}", f"sheet {target['paper']}")
+                             if target.get("paper") else tr("预览", "preview"))
                 for target, pdf_path in plan]
 
     def close(self, keep_acad: bool = False):
@@ -2190,7 +2279,8 @@ class AcadPlotter:
                 except Exception:
                     pass
             if keep_acad:
-                self.log("AutoCAD 将保留在后台，下次转换启动更快")
+                self.log(tr("AutoCAD 将保留在后台，下次转换启动更快",
+                            "AutoCAD is kept running in the background — the next run starts faster"))
         finally:
             try:
                 if self._pythoncom:
@@ -2203,11 +2293,15 @@ def _humanize_com_error(exc: Exception) -> str:
     text = str(exc).strip() or exc.__class__.__name__
     low = text.lower()
     if "文件已打开" in text or "already open" in low:
-        return "该 DWG 已在 AutoCAD 中打开，请先关闭后重试"
+        return tr("该 DWG 已在 AutoCAD 中打开，请先关闭后重试",
+                  "This DWG is already open in AutoCAD — close it and try again")
     if "拒绝访问" in text or "access is denied" in low:
-        return "文件被占用或没有读取权限"
+        return tr("文件被占用或没有读取权限",
+                  "The file is locked or cannot be read (permission denied)")
     if "找不到" in text or "not found" in low or "无法打开" in text:
-        return "文件不存在、已损坏，或由更高版本 CAD 保存（需用同版本或更高版本打开）"
+        return tr("文件不存在、已损坏，或由更高版本 CAD 保存（需用同版本或更高版本打开）",
+                  "The file is missing, damaged, or saved by a newer CAD version "
+                  "(open it with the same or a newer version)")
     return text.replace("\r", " ").replace("\n", " ")[:200]
 
 
@@ -2365,7 +2459,9 @@ class Converter:
         if len(set(names)) < len(names):
             # 图纸名有重复：多半是标题没读出来、几张图都取了同一段说明文字，
             # 这时只能靠页面文字猜，猜错了会把页序搞乱，所以宁可不调。
-            self._log("  · 图纸标题有重复，无法可靠判断页序，保持图纸原顺序")
+            self._log(tr("  · 图纸标题有重复，无法可靠判断页序，保持图纸原顺序",
+                         "  · Sheet titles repeat, so page order cannot be decided reliably — "
+                         "keeping the original order"))
             return items, ""
 
         ranks = []
@@ -2378,8 +2474,10 @@ class Converter:
         lay = [i for i, k in enumerate(ranks) if k == PAGE_RANK_LAYOUT]
         bom = [i for i, k in enumerate(ranks) if k == PAGE_RANK_BOM]
         if len(lay) > 1 or len(bom) > 1:
-            self._log(f"  · 识别到 {len(lay)} 张 LAYOUT 图、{len(bom)} 张 BOM 图，"
-                      f"无法唯一确定页序，保持图纸原顺序")
+            self._log(tr(f"  · 识别到 {len(lay)} 张 LAYOUT 图、{len(bom)} 张 BOM 图，"
+                         f"无法唯一确定页序，保持图纸原顺序",
+                         f"  · found {len(lay)} LAYOUT sheet(s) and {len(bom)} BOM sheet(s); "
+                         f"page order is ambiguous — keeping the original order"))
             return items, ""
         if not lay and not bom:
             return items, ""
@@ -2388,18 +2486,19 @@ class Converter:
             a, b = lay[0], bom[0]
             rest = [r for i, r in enumerate(items) if i not in (a, b)]
             new = [items[a], items[b]] + rest
-            note = "LAYOUT 图排第 1 页、BOM 图排第 2 页"
+            note = tr("LAYOUT 图排第 1 页、BOM 图排第 2 页",
+                      "LAYOUT sheet first, BOM sheet second")
         elif lay:
             a = lay[0]
             new = [items[a]] + [r for i, r in enumerate(items) if i != a]
-            note = "LAYOUT 图排第 1 页"
+            note = tr("LAYOUT 图排第 1 页", "LAYOUT sheet first")
         else:
             b = bom[0]
             rest = [r for i, r in enumerate(items) if i != b]
             if not rest:
                 return items, ""
             new = rest[:1] + [items[b]] + rest[1:]
-            note = "BOM 图排第 2 页"
+            note = tr("BOM 图排第 2 页", "BOM sheet second")
 
         if new == items:
             return items, ""
@@ -2413,7 +2512,8 @@ class Converter:
         """
         final = self._merged_path(folder, stem)
         if self.skip_existing and os.path.isfile(final) and os.path.getsize(final) > 0:
-            return [LayoutResult(dwg, "", final, "skip", "PDF 已存在，已跳过")]
+            return [LayoutResult(dwg, "", final, "skip",
+                                 tr("PDF 已存在，已跳过", "PDF already exists — skipped"))]
 
         tmpdir = tempfile.mkdtemp(prefix="dwg2pdf_")
         try:
@@ -2422,13 +2522,16 @@ class Converter:
                         for n, t in enumerate(targets, 1)]
 
             def on_sheet(idx, total, name):
-                self._log(f"     第 {idx}/{total} 张：{name}")
+                self._log(tr(f"     第 {idx}/{total} 张：{name}",
+                             f"     sheet {idx}/{total}: {name}"))
 
             try:
                 raw = plotter.export_drawing(dwg, namer, on_sheet=on_sheet)
             except Exception as exc:                   # noqa: BLE001
-                self._log(f"  × 处理失败：{_humanize_com_error(exc)}，"
-                          f"正在重新连接 AutoCAD 后重试…")
+                self._log(tr(f"  × 处理失败：{_humanize_com_error(exc)}，"
+                             f"正在重新连接 AutoCAD 后重试…",
+                             f"  × failed: {_humanize_com_error(exc)}; "
+                             f"reconnecting to AutoCAD and retrying…"))
                 plotter.connect()
                 raw = plotter.export_drawing(dwg, namer, on_sheet=on_sheet)
 
@@ -2439,17 +2542,20 @@ class Converter:
                 if empty:
                     return empty
                 return raw or [LayoutResult(dwg, "", "", "fail",
-                                            "没有可导出的图纸（该文件没有布局）")]
+                                            tr("没有可导出的图纸（该文件没有布局）",
+                                               "Nothing to export (this file has no layout)"))]
 
             os.makedirs(folder, exist_ok=True)
             # 默认把 LAYOUT 图放第 1 页、BOM 图放第 2 页（--no-page-order 可关掉）
             ordered, note = self._order_for_merge(ok)
             if note:
-                self._log(f"  · 页序已调整：{note}")
+                self._log(tr(f"  · 页序已调整：{note}", f"  · page order adjusted: {note}"))
             try:
                 pages = _merge_pdfs([r.pdf for r in ordered], final)
             except Exception as exc:                   # noqa: BLE001
-                self._log(f"  ！合并成一个 PDF 失败：{exc}；已改为每张图纸一个文件")
+                self._log(tr(f"  ！合并成一个 PDF 失败：{exc}；已改为每张图纸一个文件",
+                             f"  ! merging into one PDF failed: {exc}; "
+                             f"falling back to one PDF per sheet"))
                 fallback: list[LayoutResult] = []
                 for r in ok:
                     base = safe_filename(f"{self.prefix}{stem} - {r.layout}")
@@ -2458,19 +2564,25 @@ class Converter:
                         shutil.move(r.pdf, dst)
                     except OSError as exc2:
                         fallback.append(LayoutResult(dwg, r.layout, r.pdf, "fail",
-                                                     f"文件无法移动：{exc2}"))
+                                                     tr(f"文件无法移动：{exc2}",
+                                                        f"Cannot move the file: {exc2}")))
                         continue
                     fallback.append(LayoutResult(dwg, r.layout, dst, "ok",
-                                                 "合并失败，已按单张输出"))
+                                                 tr("合并失败，已按单张输出",
+                                                    "Merge failed — written as a single-sheet PDF")))
                 return fallback + bad
 
             size_mb = os.path.getsize(final) / 1024 / 1024
-            msg = f"{pages} 页 · {size_mb:.1f} MB"
+            msg = tr(f"{pages} 页 · {size_mb:.1f} MB",
+                     f"{pages} pages · {size_mb:.1f} MB")
             if empty:
-                msg += f"，已跳过 {len(empty)} 个空布局"
+                msg += tr(f"，已跳过 {len(empty)} 个空布局",
+                          f", {len(empty)} empty layout(s) skipped")
             if bad:
-                msg += f"，另有 {len(bad)} 张未出图"
-            return (empty + [LayoutResult(dwg, f"共 {pages} 张图纸", final, "ok", msg)]
+                msg += tr(f"，另有 {len(bad)} 张未出图",
+                          f", {len(bad)} sheet(s) not plotted")
+            return (empty + [LayoutResult(dwg, tr(f"共 {pages} 张图纸", f"{pages} sheets"),
+                                          final, "ok", msg)]
                     + bad)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -2481,13 +2593,16 @@ class Converter:
         got = plotter.walk_layouts(dwg, lambda targets: [(t, "") for t in targets])
         if not got:
             return []
-        return [LayoutResult(dwg, f"共 {len(got)} 张图纸", final, "preview",
-                             f"合并为 1 个 PDF，共 {len(got)} 页")]
+        return [LayoutResult(dwg, tr(f"共 {len(got)} 张图纸", f"{len(got)} sheets"),
+                             final, "preview",
+                             tr(f"合并为 1 个 PDF，共 {len(got)} 页",
+                                f"merged into 1 PDF, {len(got)} pages"))]
 
     # -------------------------------------------------- 主流程
     def run(self) -> dict:
         if not os.path.isdir(self.src):
-            raise RuntimeError(f"源文件夹不存在：{self.src}")
+            raise RuntimeError(tr(f"源文件夹不存在：{self.src}",
+                                  f"Source folder does not exist: {self.src}"))
         os.makedirs(self.out, exist_ok=True)
 
         if self.single_file:
@@ -2495,11 +2610,13 @@ class Converter:
         else:
             dwg_files = find_dwg_files(self.src, self.recursive, exclude_dirs=[self.out])
         if not dwg_files:
-            self._log(f"在 {self.src} 里没有找到任何 .dwg 文件")
+            self._log(tr(f"在 {self.src} 里没有找到任何 .dwg 文件",
+                         f"No .dwg file found in {self.src}"))
             self._emit("done", total=0, ok=0, fail=0, skip=0, results=[])
             return {"total": 0, "ok": 0, "fail": 0, "skip": 0, "results": []}
 
-        self._log(f"找到 {len(dwg_files)} 个 DWG，输出目录：{self.out}")
+        self._log(tr(f"找到 {len(dwg_files)} 个 DWG，输出目录：{self.out}",
+                     f"Found {len(dwg_files)} DWG file(s); output folder: {self.out}"))
         self._emit("scan_done", dwg_count=len(dwg_files))
 
         plotter = AcadPlotter(pc3=self.pc3, include_model=self.include_model,
@@ -2512,7 +2629,7 @@ class Converter:
         try:
             for file_no, dwg in enumerate(dwg_files, 1):
                 if self.cancel():
-                    self._log("用户已停止转换")
+                    self._log(tr("用户已停止转换", "Stopped by the user"))
                     break
 
                 self._emit("progress", current=file_no, total=len(dwg_files),
@@ -2547,7 +2664,8 @@ class Converter:
                             dwg, namer, skip_existing=self.skip_existing)
                     except Exception as exc:             # noqa: BLE001
                         msg = _humanize_com_error(exc)
-                        self._log(f"  × 处理失败：{msg}，正在重新连接 AutoCAD 后重试…")
+                        self._log(tr(f"  × 处理失败：{msg}，正在重新连接 AutoCAD 后重试…",
+                                     f"  × failed: {msg}; reconnecting to AutoCAD and retrying…"))
                         try:
                             plotter.connect()
                             results = plotter.export_drawing(
@@ -2557,7 +2675,8 @@ class Converter:
                                                     _humanize_com_error(exc2))]
 
                 if not results:
-                    self._log("  没有可导出的图纸（该文件只有模型空间，或没有布局）")
+                    self._log(tr("  没有可导出的图纸（该文件只有模型空间，或没有布局）",
+                                 "  Nothing to export (this file has only model space, or no layout)"))
 
                 for r in results:
                     if r.status != "preview":
@@ -2572,13 +2691,15 @@ class Converter:
                     elif r.status == "preview":
                         preview_count += 1
                         self.results.append(r)
-                        self._log(f"  预览 → {fname}   （图纸：{r.layout}）")
+                        self._log(tr(f"  预览 → {fname}   （图纸：{r.layout}）",
+                                     f"  preview → {fname}   (sheet: {r.layout})"))
                     elif r.status == "skip":
-                        self._log(f"  - 跳过 {fname}")
+                        self._log(tr(f"  - 跳过 {fname}", f"  - skipped {fname}"))
                     elif r.status == "empty":
                         # 空布局：DWG 里留着、但页面上一个图形一个字都没有，
                         # 出成 PDF 就是一张白纸，占着页数反而碍事，直接不出页。
-                        self._log(f"  - 空布局不出页：{r.layout}")
+                        self._log(tr(f"  - 空布局不出页：{r.layout}",
+                                     f"  - empty layout, no page: {r.layout}"))
                     else:
                         self._log(f"  × {r.layout or os.path.basename(r.dwg)}：{r.message}")
                     self._emit("result", result=r.to_dict())
@@ -2588,11 +2709,17 @@ class Converter:
         summary = {"total": len(self.results), **counters, "preview": preview_count}
         self._log("")
         if self.dry_run:
-            self._log(f"预览结束：实际会生成 {preview_count} 个 PDF（本次未出图）")
+            self._log(tr(f"预览结束：实际会生成 {preview_count} 个 PDF（本次未出图）",
+                         f"Preview finished: {preview_count} PDF(s) would be created "
+                         f"(nothing was plotted this time)"))
         else:
-            tail = f"，空布局 {counters['empty']} 个已跳过" if counters.get("empty") else ""
-            self._log(f"完成：成功 {counters['ok']} 个，跳过 {counters['skip']} 个，"
-                      f"失败 {counters['fail']} 个{tail}")
+            tail = (tr(f"，空布局 {counters['empty']} 个已跳过",
+                       f", {counters['empty']} empty layout(s) skipped")
+                    if counters.get("empty") else "")
+            self._log(tr(f"完成：成功 {counters['ok']} 个，跳过 {counters['skip']} 个，"
+                         f"失败 {counters['fail']} 个{tail}",
+                         f"Done: {counters['ok']} succeeded, {counters['skip']} skipped, "
+                         f"{counters['fail']} failed{tail}"))
         self._emit("done", results=[r.to_dict() for r in self.results], **summary)
         return {**summary, "results": [r.to_dict() for r in self.results]}
 
@@ -2602,44 +2729,76 @@ class Converter:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="dwg2pdf",
-        description="把 DWG 里的每张图纸（布局）批量导出为单个 PDF，文件名为图纸名",
+        description=tr("把 DWG 里的每张图纸（布局）批量导出为单个 PDF，文件名为图纸名",
+                       "Export every sheet (layout) of a DWG to PDF(s), named after the sheet"),
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument("-s", "--src", required=True, help="源文件夹（存放 DWG）")
-    parser.add_argument("-o", "--out", required=True, help="输出 PDF 的文件夹")
-    parser.add_argument("-p", "--prefix", default="", help="文件名前缀，如 A-（可选）")
+    parser.add_argument("-s", "--src", required=True,
+                        help=tr("源文件夹（存放 DWG）", "Source folder holding the DWGs"))
+    parser.add_argument("-o", "--out", required=True,
+                        help=tr("输出 PDF 的文件夹", "Folder for the output PDFs"))
+    parser.add_argument("-p", "--prefix", default="",
+                        help=tr("文件名前缀，如 A-（可选）", "Filename prefix, e.g. A- (optional)"))
     parser.add_argument("-t", "--tpl", default="{prefix}{layout}",
-                        help="命名模板，默认 {prefix}{layout}\n"
-                             "可用占位符：{prefix} {layout} {dwg} {n}")
+                        help=tr("命名模板，默认 {prefix}{layout}\n"
+                                "可用占位符：{prefix} {layout} {dwg} {n}",
+                                "Name template, default {prefix}{layout}\n"
+                                "Placeholders: {prefix} {layout} {dwg} {n}"))
     parser.add_argument("--include-model", action="store_true",
-                        help="同时导出模型空间（默认只导出图纸布局）")
+                        help=tr("同时导出模型空间（默认只导出图纸布局）",
+                                "Also export model space (default: layouts only)"))
     parser.add_argument("--frames", dest="frames_mode", action="store_const", const="frames",
-                        help="强制按模型空间图框拆分：每张图框（A0-A4）输出一个 PDF")
+                        help=tr("强制按模型空间图框拆分：每张图框（A0-A4）输出一个 PDF",
+                                "Force splitting by model-space frames: one PDF per A0-A4 frame"))
     parser.add_argument("--layouts", dest="frames_mode", action="store_const", const="layouts",
-                        help="只按图纸布局输出，不做图框拆分")
+                        help=tr("只按图纸布局输出，不做图框拆分",
+                                "Plot layouts only, no frame splitting"))
     parser.set_defaults(frames_mode="auto")
-    parser.add_argument("--no-recursive", action="store_true", help="只处理第一层，不含子文件夹")
-    parser.add_argument("--keep-subdir", action="store_true", help="在输出目录中保持源文件夹结构")
-    parser.add_argument("--skip-existing", action="store_true", help="跳过已存在的 PDF（断点续转）")
-    parser.add_argument("--pc3", default=None, help=f"强制使用指定打印设备，默认 {DWG_TO_PDF}")
+    parser.add_argument("--no-recursive", action="store_true",
+                        help=tr("只处理第一层，不含子文件夹",
+                                "Only the top folder, skip sub-folders"))
+    parser.add_argument("--keep-subdir", action="store_true",
+                        help=tr("在输出目录中保持源文件夹结构",
+                                "Mirror the source folder structure in the output folder"))
+    parser.add_argument("--skip-existing", action="store_true",
+                        help=tr("跳过已存在的 PDF（断点续转）",
+                                "Skip PDFs that already exist (resume where you left off)"))
+    parser.add_argument("--pc3", default=None,
+                        help=tr(f"强制使用指定打印设备，默认 {DWG_TO_PDF}",
+                                f"Force a specific plot device, default {DWG_TO_PDF}"))
     parser.add_argument("--one-pdf", dest="one_pdf", action="store_true",
-                        help="一个 DWG 只输出一个多页 PDF（每页一张图纸），默认就是这种方式")
+                        help=tr("一个 DWG 只输出一个多页 PDF（每页一张图纸），默认就是这种方式",
+                                "One multi-page PDF per DWG (one sheet per page) — the default"))
     parser.add_argument("--split", dest="one_pdf", action="store_false",
-                        help="每张图纸各输出一个 PDF（旧方式）")
+                        help=tr("每张图纸各输出一个 PDF（旧方式）",
+                                "One PDF per sheet (legacy behaviour)"))
     parser.set_defaults(one_pdf=True)
     parser.add_argument("--page-order", dest="order_pages", action="store_true",
-                        help="合并时把 LAYOUT 图排第 1 页、BOM 图排第 2 页（默认不排，保持图纸顺序）")
+                        help=tr("合并时把 LAYOUT 图排第 1 页、BOM 图排第 2 页（默认不排，保持图纸顺序）",
+                                "Put the LAYOUT sheet first and the BOM sheet second when merging "
+                                "(off by default: keep the sheet order)"))
     parser.add_argument("--no-page-order", dest="order_pages", action="store_false")
     parser.set_defaults(order_pages=False)
     parser.add_argument("--paper", default="A1", choices=["auto", "A0", "A1", "A2", "A3", "A4"],
-                        help="出图纸张，默认 A1：图纸比它小就等比放大（字更清楚），"
-                             "比它大就保持图纸原尺寸；选 auto 则完全跟着图纸走")
+                        help=tr("出图纸张，默认 A1：图纸比它小就等比放大（字更清楚），"
+                                "比它大就保持图纸原尺寸；选 auto 则完全跟着图纸走",
+                                "Paper size, default A1: sheets smaller than it are scaled up "
+                                "(clearer text), larger sheets keep their own size; auto = follow "
+                                "each sheet"))
     parser.add_argument("--keep-acad", action="store_true",
-                        help="转换完成后保留 AutoCAD 进程（下次启动更快）")
-    parser.add_argument("--dry-run", action="store_true", help="只列出会生成哪些 PDF，不出图")
-    parser.add_argument("--check", action="store_true", help="只检查 AutoCAD 与 DWG 数量")
-    parser.add_argument("--json", action="store_true", help="把结果以 JSON 打印到标准输出")
-    parser.add_argument("--log", default=None, help="同时把日志写入指定文件")
+                        help=tr("转换完成后保留 AutoCAD 进程（下次启动更快）",
+                                "Keep AutoCAD running afterwards (faster next start)"))
+    parser.add_argument("--dry-run", action="store_true",
+                        help=tr("只列出会生成哪些 PDF，不出图",
+                                "Only list the PDFs that would be created, do not plot"))
+    parser.add_argument("--check", action="store_true",
+                        help=tr("只检查 AutoCAD 与 DWG 数量",
+                                "Only check AutoCAD and count the DWGs"))
+    parser.add_argument("--json", action="store_true",
+                        help=tr("把结果以 JSON 打印到标准输出",
+                                "Print the result as JSON to stdout"))
+    parser.add_argument("--log", default=None,
+                        help=tr("同时把日志写入指定文件", "Also write the log to this file"))
     args = parser.parse_args(argv)
 
     log_fp = open(args.log, "w", encoding="utf-8") if args.log else None
@@ -2661,12 +2820,12 @@ def main(argv=None) -> int:
             print(f"× {exc}")
             return 3
         files = find_dwg_files(args.src, not args.no_recursive) if os.path.isdir(args.src) else []
-        print(f"AutoCAD 版本：{plotter.version}")
-        print(f"DWG 文件数：{len(files)}")
+        print(tr(f"AutoCAD 版本：{plotter.version}", f"AutoCAD version: {plotter.version}"))
+        print(tr(f"DWG 文件数：{len(files)}", f"DWG files: {len(files)}"))
         for f in files[:20]:
             print("  " + os.path.basename(f))
         if len(files) > 20:
-            print(f"  …共 {len(files)} 个")
+            print(tr(f"  …共 {len(files)} 个", f"  …{len(files)} in total"))
         plotter.close()
         return 0
 
@@ -2682,7 +2841,7 @@ def main(argv=None) -> int:
     try:
         summary = conv.run()
     except Exception as exc:                            # noqa: BLE001
-        print(f"× 运行失败：{exc}")
+        print(tr(f"× 运行失败：{exc}", f"× run failed: {exc}"))
         traceback.print_exc()
         return 3
     finally:

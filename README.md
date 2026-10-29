@@ -7,8 +7,12 @@ becomes three files with the prefix `A-`: `A-Ground Floor.pdf`, `A-First Floor.p
 
 English | [简体中文](README.zh-CN.md)
 
-> **Note on languages:** this README, the CLI flags and the log *file names* are in English.
-> The GUI labels and the log *messages* inside the app are still in Chinese (an English UI is planned).
+> **Languages (since v2.8.0):** the whole UI *and* every log/error message exist in **Chinese and English**.
+> On start-up the app picks one from the machine: if any of the UI language IDs is Chinese, the locale name
+> starts with `zh`, or the non-Unicode code page is 936/GB18030/950, you get Chinese — otherwise English.
+> The button at the right of the title (`English` / `中文`) switches instantly and the choice is stored in
+> `dwg2pdf_state.json` (`"lang": "zh" | "en" | "auto"`); `auto` follows the system. The `--help` text switches
+> with the language too; only the comments inside the source files are Chinese-only.
 
 ---
 
@@ -249,6 +253,8 @@ copy it back over the one in this folder. Rebuilding needs Python plus `pip inst
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| The UI turned up in English / I want English | Since v2.8.0 the language follows the machine: Chinese if any Chinese signal is found, English otherwise. Click the `English` / `中文` button at the right of the title to switch instantly — it is remembered in the `lang` key of `dwg2pdf_state.json`. Set that key to `"auto"` to follow the system again |
+|---------|-------------|
 | Same problem persists after replacing the exe | The **old background process is probably still alive**: the new exe finds an instance already listening on port 8791 and simply points the browser at it, so the old code keeps doing the work. Since v1.9.1 the launcher compares version numbers and automatically shuts down a stale instance before starting; the UI also shows the version (e.g. `v1.9.1`) next to the title. On older builds, click **Quit** in the UI or end `DWG2PDF.exe` in Task Manager, then start the new exe |
 | The drawing sits in one corner of the PDF, the rest blank, and edges are cut off | The drawing was set up for a non-PDF plot device (`Microsoft Print to PDF`, a printer driver…). Its paper name (`A4`) does not exist in DWG To PDF, so AutoCAD fell back to Letter portrait, and a fixed 1:100 scale then puts the sheet in a corner. Since v1.9 the app restores the paper by physical size, re-frames and centres the content, and uses full-bleed media for edge-to-edge sheets. On older versions, set the layout's plot device to `DWG To PDF.pc3` in AutoCAD and replot |
 | No browser window after double-clicking the exe | Wait 2–5 s (the exe unpacks itself first). If nothing happens, check for `start_error.log` next to the exe, or open <http://127.0.0.1:8791/> manually |
@@ -291,11 +297,12 @@ copy it back over the one in this folder. Rebuilding needs Python plus `pip inst
 | `dwg2pdf_ui.py` | Local GUI/HTTP service (127.0.0.1, reachable from this machine only) |
 | `ui.html` | The UI page (folder picking, prefix, log and progress) |
 | `dwg2pdf.py` | Core engine: scan DWGs, plot per layout/frame, CLI options |
+| `i18n.py` | Chinese/English support: language detection, switching and lookup |
 | `build_exe.bat` | Rebuild the exe after code changes |
 | `app.ico` | Application icon |
 | `QUICKSTART.txt` | Portable quick-start notes — read this when you copy the exe to another PC |
 | `run.log` | Runtime log generated automatically (page loads, clicks, exceptions); rotates to `run.log.old` above 512 KB |
-| `dwg2pdf_state.json` | Remembers the last folder you opened (since v2.7.0); delete it to reset the picker's starting point |
+| `dwg2pdf_state.json` | Remembers the last folder you opened (since v2.7.0) and the UI language (since v2.8.0); delete it to reset both |
 | `start_error.log` | Only created when start-up fails; contains the detailed traceback |
 
 To exit: click **Exit** in the UI (the exe has no console window, so this button is the way out).
@@ -305,6 +312,7 @@ With `start.bat` you can also just close the console window.
 
 | Version | Notes |
 |---------|-------|
+| v2.8.0 | **Chinese/English throughout.** The UI, the conversion log and every error message exist in both languages, and the app picks one from the machine on start-up: Chinese when any UI language ID is Chinese (`0x04`), the locale name starts with `zh`, or the non-Unicode code page is 936/GB18030/950 — otherwise English. Those three signals disagree on the development machine (user UI `en-US`, system UI `zh-CN`, code page 936), which is exactly why a single switch would be wrong. The `English` / `中文` button at the right of the title switches the whole page instantly (static labels, buttons, options, placeholders, tooltips, status line, counters) and later log lines use the new language; the choice is stored as `lang` in `dwg2pdf_state.json` (`zh` / `en` / `auto`) and picked up again on the next start, and other open windows follow within 5 s. Translations live at the call site (`tr("中文", "English")` in Python, an `I18N` dictionary in JS) instead of a key→text indirection, because in a 3200-line plotting engine that indirection is what silently rots. All 80 log/error strings in the engine and all 85 UI strings are covered, and a small AST-based check reports any Chinese literal that is not wrapped in `tr(...)`. The CLI `--help` switches too; `--lang zh|en|auto` overrides for one run without touching the saved choice |
 | v2.7.0 | **The last folder you picked is remembered.** Every restart used to open the picker at your user folder, so getting back to a project directory meant clicking down through the tree again. Pick a folder once and the next launch opens the picker right there. The DWG folder and the PDF output folder keep separate positions; a browse you cancelled counts too, so you resume where you stopped; a path typed into the box — or one you start a conversion with — is also treated as “used”. Stored in `dwg2pdf_state.json` next to the exe (paths only), falling back to `%LOCALAPPDATA%\DWG2PDF\` when the exe folder is read-only; delete the file to reset. Stale entries (USB stick removed, folder renamed, network drive offline) are skipped instead of turning into an error dialog |
 | v2.6.0 | **Duplicate title-block frames get called out.** Three DWGs in the second Thai data-centre batch (`3-IP GW- FWU1-01`, `3-IP GW- FWU1-02`, `4-IP GW- FWU2-02`) have **two identical title-block frames pasted side by side** inside a layout (`SL14 DI-16 Wiring Detail`). Because the app splits such a layout by “whole-sheet blocks”, pages 17 and 18 came out as two identical sheets — the drawing's own fault, but almost impossible to spot before a submission review. Each whole-sheet block now gets a **content signature** right after the split: block-definition name plus the attribute values of that block reference. Every instance of one block definition shares the same geometry and the same in-block text, so the only thing that can differ is attributes (drawing number, title, date); equal block name **and** equal attribute values therefore means two identical sheets. A collision is reported as `⚠ 疑似重复图框：第 17 张、第 18 张图内容完全相同（块「图签1」，2 项属性也一致），请核对图纸`. It is a hint only — page count and output are unchanged — and when attributes cannot be read (AutoCAD busy, broken block) nothing is guessed and nothing is reported, because a false alarm is worse than a miss. Scope: drawings that put a whole sheet into one block (the three DWGs above). “Empty frame block with loose geometry inside” is not checked — that would mean walking every entity inside the frame, which is too expensive |
 | v2.5.0 | **Empty layouts no longer become pages.** Several DWGs in the Thai DEC batch carry a pile of leftover empty layouts (`布局9`…`布局20`) with nothing behind them in model space. One page per layout meant **50 completely blank pages across 23 PDFs**. Verified by plotting those layouts straight from AutoCAD without this app: still blank (0.46 % ink, only the paper-edge line), so it is the drawing's own problem — but a blank page in a submission PDF is still unusable. Every page is now checked right after plotting by parsing the content-stream operators of the page: a real sheet carries 60–800 text operators, 6000–160000 path operators and 170 KB–2.5 MB of stream, while an empty layout carries 0 text operators, 10 path operators and 203 bytes. Only when all three hold is the page dropped, and the log names it (*“空布局不出页：布局12”*) and the summary counts it (*“空布局 12 个已跳过”*). The check uses the bundled pypdf only — PyMuPDF stays out of the exe, so the download does not grow. A second hint was added: when a page has text but too few lines to be a drawing (<2500 path operators) the log warns *“几乎没有图形，只出到图框和文字，请核对”*, which normally means an empty viewport, layers switched off, or a missing xref. Measured on 23 DWGs: **324 → 274 pages**, blank pages 50 → 0, every page still A1 841×594 at 97.9 % fill, and not one page of real content was lost (GEN-1D 20→8, FWUR2-2 20→9, FWUR1-2 20→11, FWU2-01 20→15, GH-03 11→10) |

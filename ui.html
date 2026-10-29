@@ -101,6 +101,13 @@
   #log .preview{color:var(--accent);}
   #log .dim{color:#9ca3af;}
   #log .head{color:#111827;font-weight:600;}
+  .hdtop{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+  .langbtn{
+    height:30px;padding:0 14px;font-size:12.5px;border-radius:20px;flex:0 0 auto;
+    border:1px solid #dbe3ec;background:#fff;color:#475569;cursor:pointer;
+    font-weight:600;letter-spacing:.2px;
+  }
+  .langbtn:hover{background:#eef2f7;border-color:#cfd4dc;}
   .foot{color:#9ca3af;font-size:12px;text-align:center;margin-top:6px;line-height:1.9;}
   .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#cbd5e1;margin-right:6px;}
   .dot.run{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15);}
@@ -200,74 +207,80 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>DWG 批量转 PDF <span class="ver" id="ver"></span></h1>
-    <div class="sub">把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>逐张出图，再<b>合并成一个多页 PDF</b>（默认），也可以改成每张图纸各一个 PDF。</div>
+    <div class="hdtop">
+      <h1><span data-i18n="h1">DWG 批量转 PDF</span> <span class="ver" id="ver"></span></h1>
+      <button class="langbtn" id="btnLang" onclick="toggleLang()"
+              title="Switch language / 切换语言">English</button>
+    </div>
+    <div class="sub" data-i18n-html="sub">把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>逐张出图，再<b>合并成一个多页 PDF</b>（默认），也可以改成每张图纸各一个 PDF。</div>
   </header>
 
   <div class="banner" id="banner" style="display:none"></div>
 
   <div class="card">
-    <h2>一、文件夹与命名</h2>
+    <h2 data-i18n="sec1">一、文件夹与命名</h2>
     <div class="row">
-      <label>DWG 所在文件夹</label>
-      <input type="text" id="src" placeholder="例如 D:\项目\建筑图">
-      <button onclick="browse('src', this)">选择…</button>
+      <label data-i18n="srcLabel">DWG 所在文件夹</label>
+      <input type="text" id="src" data-i18n-ph="srcPh" placeholder="例如 D:\项目\建筑图">
+      <button onclick="browse('src', this)" data-i18n="pickBtn">选择…</button>
     </div>
 
     <div class="row">
-      <label>PDF 输出文件夹</label>
-      <input type="text" id="out" placeholder="选择上面的文件夹后自动填「该文件夹\PDF」">
-      <button onclick="browse('out', this)">选择…</button>
-      <button class="ghost" onclick="resetOut()" title="回到「DWG 所在文件夹\PDF」">默认</button>
+      <label data-i18n="outLabel">PDF 输出文件夹</label>
+      <input type="text" id="out" data-i18n-ph="outPh" placeholder="选择上面的文件夹后自动填「该文件夹\PDF」">
+      <button onclick="browse('out', this)" data-i18n="pickBtn">选择…</button>
+      <button class="ghost" onclick="resetOut()" data-i18n="resetBtn"
+              data-i18n-title="resetTitle" title="回到「DWG 所在文件夹\PDF」">默认</button>
     </div>
 
     <div class="row">
-      <label>文件名前缀</label>
-      <input type="text" id="prefix" placeholder="可留空；例如填 A-" style="max-width:280px">
+      <label data-i18n="prefixLabel">文件名前缀</label>
+      <input type="text" id="prefix" data-i18n-ph="prefixPh"
+             placeholder="可留空；例如填 A-" style="max-width:280px">
       <div class="hint" id="nameHint">命名示例：<code>一层平面图.pdf</code></div>
     </div>
 
     <div class="row">
-      <label>一个 DWG 的输出</label>
+      <label data-i18n="oneOutLabel">一个 DWG 的输出</label>
       <div class="checks radios">
         <label><input type="radio" name="one_pdf" value="1" checked onchange="syncNameHint()">
-          合并成 1 个 PDF（多页，每页一张图纸）</label>
+          <span data-i18n="modeMerge">合并成 1 个 PDF（多页，每页一张图纸）</span></label>
         <label><input type="radio" name="one_pdf" value="0" onchange="syncNameHint()">
-          每张图纸各出 1 个 PDF（原来是这种方式）</label>
+          <span data-i18n="modeSplit">每张图纸各出 1 个 PDF（原来是这种方式）</span></label>
       </div>
     </div>
 
     <div class="row">
-      <label>选项</label>
+      <label data-i18n="optsLabel">选项</label>
       <div class="checks">
-        <label><input type="checkbox" id="recursive" checked> 包含子文件夹</label>
-        <label><input type="checkbox" id="keep_subdir" checked> 输出保持目录结构</label>
-        <label><input type="checkbox" id="include_model"> 同时导出模型空间</label>
-        <label><input type="checkbox" id="skip_existing"> 跳过已生成的 PDF</label>
-        <label><input type="checkbox" id="frames" checked> 多图纸按图框拆分（A0-A4）</label>
-        <label><input type="checkbox" id="order_pages"> 合并时 LAYOUT 图排第 1 页、BOM 图排第 2 页</label>
-        <label><input type="checkbox" id="keep_acad"> 转换后保留 AutoCAD 进程</label>
+        <label><input type="checkbox" id="recursive" checked> <span data-i18n="optRecursive">包含子文件夹</span></label>
+        <label><input type="checkbox" id="keep_subdir" checked> <span data-i18n="optKeepSubdir">输出保持目录结构</span></label>
+        <label><input type="checkbox" id="include_model"> <span data-i18n="optModel">同时导出模型空间</span></label>
+        <label><input type="checkbox" id="skip_existing"> <span data-i18n="optSkip">跳过已生成的 PDF</span></label>
+        <label><input type="checkbox" id="frames" checked> <span data-i18n="optFrames">多图纸按图框拆分（A0-A4）</span></label>
+        <label><input type="checkbox" id="order_pages"> <span data-i18n="optOrder">合并时 LAYOUT 图排第 1 页、BOM 图排第 2 页</span></label>
+        <label><input type="checkbox" id="keep_acad"> <span data-i18n="optKeepAcad">转换后保留 AutoCAD 进程</span></label>
       </div>
     </div>
 
     <div class="row">
-      <label>纸张大小</label>
+      <label data-i18n="paperLabel">纸张大小</label>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <select id="paper" style="min-width:190px">
           <option value="A0">A0</option>
-          <option value="A1" selected>A1（默认，推荐）</option>
+          <option value="A1" selected data-i18n="paperA1">A1（默认，推荐）</option>
           <option value="A2">A2</option>
           <option value="A3">A3</option>
           <option value="A4">A4</option>
-          <option value="auto">自动（按图纸本身尺寸）</option>
+          <option value="auto" data-i18n="paperAuto">自动（按图纸本身尺寸）</option>
         </select>
-        <span class="hint" style="margin:0">
+        <span class="hint" style="margin:0" data-i18n="paperHint">
           图纸比选定的纸小就等比放大（字更大、更清楚）；图纸本身比它大时保持图纸原尺寸，不会被缩小。
         </span>
       </div>
     </div>
 
-    <div class="hint" style="margin-top:14px">
+    <div class="hint" style="margin-top:14px" data-i18n-html="bigHint">
       选「合并成 1 个 PDF」时，文件名取 DWG 的文件名（可加前缀），页序就是图纸顺序，
       一个 13 张图的 DWG 只出一个 13 页的 PDF；选「每张图纸各出 1 个 PDF」时，文件名取图纸名。<br>
       勾选「LAYOUT 图排第 1 页、BOM 图排第 2 页」时，合并前会把 LAYOUT（布置图）提到第 1 页、
@@ -282,13 +295,13 @@
   </div>
 
   <div class="card">
-    <h2>二、开始转换</h2>
+    <h2 data-i18n="sec2">二、开始转换</h2>
     <div class="actions">
-      <button class="primary" id="btnStart" onclick="start()">开始转换</button>
-      <button class="danger" id="btnStop" onclick="stop()" disabled>停止</button>
-      <button id="btnOpen" onclick="openOut()" disabled>打开输出文件夹</button>
+      <button class="primary" id="btnStart" onclick="start()" data-i18n="startBtn">开始转换</button>
+      <button class="danger" id="btnStop" onclick="stop()" data-i18n="stopBtn" disabled>停止</button>
+      <button id="btnOpen" onclick="openOut()" data-i18n="openBtn" disabled>打开输出文件夹</button>
       <div class="spacer"></div>
-      <button id="btnQuit" onclick="quit()">退出程序</button>
+      <button id="btnQuit" onclick="quit()" data-i18n="quitBtn">退出程序</button>
     </div>
 
     <div class="bar-wrap"><div class="bar" id="bar"></div></div>
@@ -303,11 +316,11 @@
   </div>
 
   <div class="card">
-    <h2>三、运行日志</h2>
+    <h2 data-i18n="sec3">三、运行日志</h2>
     <div id="log"></div>
   </div>
 
-  <div class="foot">
+  <div class="foot" data-i18n-html="foot">
     转换过程由本机 AutoCAD 完成，线宽、比例、打印样式与手工打印一致，不会修改原始 DWG。<br>
     首次运行需要启动 AutoCAD，约 30 秒后日志会出现「已连接」。
   </div>
@@ -317,16 +330,18 @@
   <div class="picker" role="dialog" aria-modal="true" aria-labelledby="pkTitle">
     <div class="pk-head">
       <h3 id="pkTitle">选择文件夹</h3>
-      <div class="sub" id="pkSub">单击选中文件夹，双击进入</div>
-      <button class="pk-x" onclick="pkCancel()" title="关闭">✕</button>
+      <div class="sub" id="pkSub" data-i18n="pickerSub">单击选中文件夹，双击进入</div>
+      <button class="pk-x" onclick="pkCancel()" data-i18n-title="closeTitle" title="关闭">✕</button>
     </div>
     <div class="pk-body">
       <aside class="pk-side" id="pkSide"></aside>
       <section class="pk-main">
         <div class="pk-bar">
-          <button onclick="pkUp()" title="上一级">↑ 上一级</button>
-          <input type="text" id="pkPath" spellcheck="false" placeholder="可以直接粘贴或输入完整路径，回车跳转">
-          <button onclick="pkGo()">转到</button>
+          <button onclick="pkUp()" data-i18n-title="upTitle" title="上一级"
+                  data-i18n="upBtn">↑ 上一级</button>
+          <input type="text" id="pkPath" spellcheck="false" data-i18n-ph="pathPh"
+                 placeholder="可以直接粘贴或输入完整路径，回车跳转">
+          <button onclick="pkGo()" data-i18n="goBtn">转到</button>
         </div>
         <div class="pk-list" id="pkList"></div>
         <div class="pk-tip" id="pkTip"></div>
@@ -334,8 +349,8 @@
     </div>
     <div class="pk-foot">
       <div class="pk-picked" id="pkPicked">未选择</div>
-      <button onclick="pkCancel()">取消</button>
-      <button class="primary" onclick="pkOk()">选择这个文件夹</button>
+      <button onclick="pkCancel()" data-i18n="cancelBtn">取消</button>
+      <button class="primary" onclick="pkOk()" data-i18n="okBtn">选择这个文件夹</button>
     </div>
   </div>
 </div>
@@ -345,6 +360,276 @@ const $ = id => document.getElementById(id);
 let cursor = 0, timer = null, running = false, totalFiles = 0;
 /* outAuto=true 表示「PDF 输出文件夹」还跟着 DWG 文件夹走；用户手动指定过就变 false */
 let outAuto = true;
+
+
+/* ---------- 语言（中 / 英，可手动切换，默认跟随系统） ---------- */
+const LS_LANG = 'dwg2pdf.lang';
+let LANG = (function(){
+  try{
+    const v = localStorage.getItem(LS_LANG);
+    if(v === 'en' || v === 'zh') return v;
+  }catch(e){}
+  return (navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+})();
+
+const I18N = {
+  zh: {
+    title: 'DWG 批量转 PDF',
+    h1: 'DWG 批量转 PDF',
+    sub: '把文件夹里每个 DWG 的<b>每一张图纸（布局）</b>逐张出图，再<b>合并成一个多页 PDF</b>（默认），也可以改成每张图纸各一个 PDF。',
+    sec1: '一、文件夹与命名',
+    srcLabel: 'DWG 所在文件夹',
+    srcPh: '例如 D:\\项目\\建筑图',
+    pickBtn: '选择…',
+    outLabel: 'PDF 输出文件夹',
+    outPh: '选择上面的文件夹后自动填「该文件夹\\PDF」',
+    resetBtn: '默认',
+    resetTitle: '回到「DWG 所在文件夹\\PDF」',
+    prefixLabel: '文件名前缀',
+    prefixPh: '可留空；例如填 A-',
+    nameHint: '命名示例：',
+    oneOutLabel: '一个 DWG 的输出',
+    modeMerge: '合并成 1 个 PDF（多页，每页一张图纸）',
+    modeSplit: '每张图纸各出 1 个 PDF（原来是这种方式）',
+    optsLabel: '选项',
+    optRecursive: '包含子文件夹',
+    optKeepSubdir: '输出保持目录结构',
+    optModel: '同时导出模型空间',
+    optSkip: '跳过已生成的 PDF',
+    optFrames: '多图纸按图框拆分（A0-A4）',
+    optOrder: '合并时 LAYOUT 图排第 1 页、BOM 图排第 2 页',
+    optKeepAcad: '转换后保留 AutoCAD 进程',
+    paperLabel: '纸张大小',
+    paperA1: 'A1（默认，推荐）',
+    paperAuto: '自动（按图纸本身尺寸）',
+    paperHint: '图纸比选定的纸小就等比放大（字更大、更清楚）；图纸本身比它大时保持图纸原尺寸，不会被缩小。',
+    bigHint: '选「合并成 1 个 PDF」时，文件名取 DWG 的文件名（可加前缀），页序就是图纸顺序，'
+           + '一个 13 张图的 DWG 只出一个 13 页的 PDF；选「每张图纸各出 1 个 PDF」时，文件名取图纸名。<br>'
+           + '勾选「LAYOUT 图排第 1 页、BOM 图排第 2 页」时，合并前会把 LAYOUT（布置图）提到第 1 页、'
+           + 'BOM（物料清单）提到第 2 页，其余图纸顺序不变；程序按图纸名和页面文字判断，'
+           + '认不出来或同类型有多张时自动保持原顺序，日志里会写明。<br>'
+           + '同一文件夹里不同 DWG 出现同名图纸时，会自动补上源文件名区分，例如 '
+           + '<code>一层平面图 - 结构B.pdf</code>，不会互相覆盖。<br>'
+           + '勾选「多图纸按图框拆分」时，若图纸布局是空的、所有图都排在一张模型空间里，'
+           + '程序会按 <code>A0-A4</code> 图框逐个输出，每张图自动用它的图幅（A0~A4）和标题栏里的图名；'
+           + '布局里已经有内容的图仍按布局输出。',
+    sec2: '二、开始转换',
+    startBtn: '开始转换',
+    stopBtn: '停止',
+    openBtn: '打开输出文件夹',
+    quitBtn: '退出程序',
+    sec3: '三、运行日志',
+    foot: '转换过程由本机 AutoCAD 完成，线宽、比例、打印样式与手工打印一致，不会修改原始 DWG。<br>'
+        + '首次运行需要启动 AutoCAD，约 30 秒后日志会出现「已连接」。',
+    pickerSub: '单击选中文件夹，双击进入',
+    closeTitle: '关闭',
+    upBtn: '↑ 上一级',
+    upTitle: '上一级',
+    pathPh: '可以直接粘贴或输入完整路径，回车跳转',
+    goBtn: '转到',
+    notChosen: '未选择',
+    cancelBtn: '取消',
+    okBtn: '选择这个文件夹',
+    ready: '就绪',
+    chipOk: n => '成功 ' + n,
+    chipSkip: n => '跳过 ' + n,
+    chipErr: n => '失败 ' + n,
+    outDefault: '输出文件夹已回到默认：',
+    outName: 'DWG 所在文件夹\\PDF',
+    scriptError: '页面脚本出错：',
+    requestError: '请求出错：',
+    offline: '这个页面连不上程序后台（服务可能已经退出）。请重新双击「DWG2PDF.exe」。',
+    offlineLong: '这个页面已经连不上程序后台了（多半是之前那次运行已退出，或是另一个实例的页面）。'
+               + '关闭本页，重新双击「DWG2PDF.exe」即可。',
+    pickFirst: '请先选中一个文件夹',
+    chosen: '已选择：',
+    placesCommon: '常用位置',
+    placesDrives: '此电脑',
+    emptyList: '这个文件夹里没有子文件夹<br>可以直接点右下角「选择这个文件夹」',
+    tipCount: n => '当前文件夹里有 <b>' + n + '</b> 个 DWG（不含子文件夹）。'
+                + (n ? '可以直接选这个文件夹。' : '若图纸在子文件夹里，请进去选。'),
+    atTop: '已经是顶层（盘符）了',
+    hintMerged: '某图纸.pdf（用 DWG 的文件名）',
+    hintSplit: '一层平面图.pdf（用图纸名）',
+    needSrc: '请先选择 DWG 所在文件夹',
+    submitting: '正在提交任务…',
+    submittingLog: '正在提交：',
+    slowHint: '（后台正在读取文件夹并启动 AutoCAD，首次约 30 秒，请稍候…）',
+    startFailed: '启动失败',
+    submitted: n => '已提交，共 ' + n + ' 个 DWG，正在逐张出图…',
+    cannotConnect: '无法连接本机服务：',
+    connectFailAlert: '无法连接本机服务，请重新双击「DWG2PDF.exe」。',
+    stopping: '正在停止…',
+    openFailed: '打开失败',
+    confirmQuit: '正在转换中，确定退出吗？',
+    quitHtml: '程序已退出，可以直接关闭这个页面。',
+    processing: (c, t, d) => '正在处理第 ' + c + '/' + t + ' 个：' + d,
+    doneSummary: (o, s, f) => '完成：成功 ' + o + ' 个，跳过 ' + s + ' 个，失败 ' + f + ' 个',
+    errorPrefix: m => '出错了：' + m,
+    pickerTitleSrc: '选择存放 DWG 的文件夹',
+    pickerTitleOut: '选择 PDF 输出文件夹',
+    reading: '正在读取…',
+    couldNotRead: '无法读取这个文件夹',
+    noResponse: '无法读取这个文件夹（服务没有响应）'
+  },
+  en: {
+    title: 'DWG Batch to PDF',
+    h1: 'DWG Batch to PDF',
+    sub: 'Plot <b>every sheet (layout)</b> of each DWG in a folder, then <b>merge them into one multi-page PDF</b> (default) — or keep one PDF per sheet.',
+    sec1: '1 · Folders and file names',
+    srcLabel: 'DWG folder',
+    srcPh: 'e.g. D:\\Projects\\Drawings',
+    pickBtn: 'Browse…',
+    outLabel: 'PDF output folder',
+    outPh: 'Filled in automatically as “…\\PDF” once you pick the DWG folder',
+    resetBtn: 'Default',
+    resetTitle: 'Back to “DWG folder\\PDF”',
+    prefixLabel: 'Filename prefix',
+    prefixPh: 'Optional, e.g. A-',
+    nameHint: 'Example: ',
+    oneOutLabel: 'Output per DWG',
+    modeMerge: 'Merge into one PDF (multi-page, one sheet per page)',
+    modeSplit: 'One PDF per sheet (the previous behaviour)',
+    optsLabel: 'Options',
+    optRecursive: 'Include sub-folders',
+    optKeepSubdir: 'Mirror folder structure in output',
+    optModel: 'Also export model space',
+    optSkip: 'Skip PDFs that already exist',
+    optFrames: 'Split multiple sheets by frame (A0-A4)',
+    optOrder: 'When merging, put the LAYOUT sheet first and the BOM sheet second',
+    optKeepAcad: 'Keep AutoCAD running afterwards',
+    paperLabel: 'Paper size',
+    paperA1: 'A1 (default, recommended)',
+    paperAuto: 'Auto (use each sheet’s own size)',
+    paperHint: 'Sheets smaller than the chosen paper are scaled up proportionally (bigger, clearer text); larger sheets keep their own size and are never shrunk.',
+    bigHint: 'With “Merge into one PDF” the file is named after the DWG (prefix optional) and the pages follow the sheet order — '
+           + 'a DWG with 13 sheets gives one 13-page PDF; with “One PDF per sheet” each file is named after its sheet.<br>'
+           + 'When “put the LAYOUT sheet first and the BOM sheet second” is ticked, before merging the LAYOUT sheet is moved to page 1 '
+           + 'and the BOM sheet to page 2, the rest keep their order. This is decided from sheet titles and page text; if it cannot be '
+           + 'decided (or several sheets of the same kind exist) the original order is kept and the log says so.<br>'
+           + 'If two DWGs in the same folder contain a sheet with the same name, the source file name is appended automatically, e.g. '
+           + '<code>Floor Plan - Block B.pdf</code>, so nothing overwrites anything.<br>'
+           + 'With “Split multiple sheets by frame” ticked, when the layouts are empty and all sheets sit in one model space, the program '
+           + 'plots them one by one using the <code>A0-A4</code> frames, taking each sheet’s own size (A0–A4) and the title from its title '
+           + 'block; layouts that already contain something are still plotted as layouts.',
+    sec2: '2 · Start the conversion',
+    startBtn: 'Start',
+    stopBtn: 'Stop',
+    openBtn: 'Open output folder',
+    quitBtn: 'Quit',
+    sec3: '3 · Log',
+    foot: 'Plotting is done by AutoCAD on this machine, so line weights, scale and plot styles match a manual plot, '
+        + 'and the original DWG is never modified.<br>'
+        + 'The first run has to start AutoCAD — about 30 seconds later the log shows “connected”.',
+    pickerSub: 'Click to select a folder, double-click to open it',
+    closeTitle: 'Close',
+    upBtn: '↑ Up',
+    upTitle: 'Parent folder',
+    pathPh: 'Paste or type a full path, then press Enter',
+    goBtn: 'Go',
+    notChosen: 'Nothing selected',
+    cancelBtn: 'Cancel',
+    okBtn: 'Use this folder',
+    ready: 'Ready',
+    chipOk: n => 'OK ' + n,
+    chipSkip: n => 'Skipped ' + n,
+    chipErr: n => 'Failed ' + n,
+    outDefault: 'Output folder reset to: ',
+    outName: 'DWG folder\\PDF',
+    scriptError: 'Page script error: ',
+    requestError: 'Request error: ',
+    offline: 'This page cannot reach the local service (it may have exited). Please start DWG2PDF.exe again.',
+    offlineLong: 'This page can no longer reach the local service (the previous run probably exited, or this page belongs '
+               + 'to another instance). Close this tab and start DWG2PDF.exe again.',
+    pickFirst: 'Select a folder first',
+    chosen: 'Selected: ',
+    placesCommon: 'Places',
+    placesDrives: 'This PC',
+    emptyList: 'No sub-folders in this folder<br>Just click “Use this folder” at the bottom right',
+    tipCount: n => 'This folder holds <b>' + n + '</b> DWG file(s) (sub-folders not counted). '
+                + (n ? 'You can use this folder.' : 'If the drawings are in a sub-folder, open it and pick there.'),
+    atTop: 'This is already the top level (a drive root)',
+    hintMerged: 'Drawing.pdf (uses the DWG file name)',
+    hintSplit: 'Floor Plan.pdf (uses the sheet name)',
+    needSrc: 'Choose the DWG folder first',
+    submitting: 'Submitting…',
+    submittingLog: 'Submitting: ',
+    slowHint: '(Reading the folder and starting AutoCAD — about 30 s on the first run…)',
+    startFailed: 'Failed to start',
+    submitted: n => 'Submitted — ' + n + ' DWG file(s), plotting sheet by sheet…',
+    cannotConnect: 'Cannot reach the local service: ',
+    connectFailAlert: 'Cannot reach the local service — please start DWG2PDF.exe again.',
+    stopping: 'Stopping…',
+    openFailed: 'Cannot open the folder',
+    confirmQuit: 'A conversion is running. Quit anyway?',
+    quitHtml: 'The program has exited — you can close this page.',
+    processing: (c, t, d) => 'Processing ' + c + '/' + t + ': ' + d,
+    doneSummary: (o, s, f) => 'Done: ' + o + ' succeeded, ' + s + ' skipped, ' + f + ' failed',
+    errorPrefix: m => 'Error: ' + m,
+    pickerTitleSrc: 'Choose the folder holding the DWGs',
+    pickerTitleOut: 'Choose the PDF output folder',
+    reading: 'Loading…',
+    couldNotRead: 'Cannot read this folder',
+    noResponse: 'Cannot read this folder (the service is not responding)'
+  }
+};
+
+/* 取词：值是函数就带上参数调用 */
+function T(key, ...a){
+  const pack = I18N[LANG] || I18N.zh;
+  let v = Object.prototype.hasOwnProperty.call(pack, key) ? pack[key] : I18N.zh[key];
+  if(v === undefined) return key;
+  return typeof v === 'function' ? v(...a) : v;
+}
+
+let statusK = 'ready', statusA = [];
+/* 状态栏：记下 key 与参数，切换语言时原地重译 */
+function status(key, ...a){
+  statusK = key; statusA = a;
+  setStatus(T(key, ...a));
+}
+
+function applyLang(lang, save){
+  LANG = (lang === 'en') ? 'en' : 'zh';
+  document.documentElement.lang = (LANG === 'en') ? 'en' : 'zh-CN';
+  document.title = T('title');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = T(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = T(el.getAttribute('data-i18n-html'));
+  });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+    el.placeholder = T(el.getAttribute('data-i18n-ph'));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = T(el.getAttribute('data-i18n-title'));
+  });
+  const b = $('btnLang');
+  if(b) b.textContent = (LANG === 'zh') ? 'English' : '中文';
+  updateChips(lastCounters);
+  syncNameHint();
+  syncOut();
+  if($('pkMask').classList.contains('show')){
+    $('pkTitle').textContent = T(pk.kind === 'src' ? 'pickerTitleSrc' : 'pickerTitleOut');
+    if(!pk.sel) $('pkPicked').textContent = T('notChosen');
+  }
+  if(statusK && !running) setStatus(T(statusK, ...statusA));
+  if(save !== false){
+    try{ localStorage.setItem(LS_LANG, LANG); }catch(e){}
+  }
+}
+
+/* 点右上角按钮：立刻换，并存到后台（下次启动 / 换浏览器都记得） */
+function toggleLang(){
+  const next = (LANG === 'zh') ? 'en' : 'zh';
+  applyLang(next, true);
+  fetch('/api/lang', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ lang: next })
+  }).catch(() => {});
+}
+
 
 /* 默认输出目录：DWG 所在文件夹下的 PDF 子文件夹（程序会自动新建） */
 function defaultOut(src){
@@ -360,9 +645,9 @@ function syncOut(){
   const def = defaultOut($('src').value);
   if(outAuto){
     el.value = def;
-    el.placeholder = def || '选择上面的文件夹后自动填「该文件夹\\PDF」';
+    el.placeholder = def || T('outPh');
   }else if(!el.value.trim()){
-    el.placeholder = def || '选择上面的文件夹后自动填「该文件夹\\PDF」';
+    el.placeholder = def || T('outPh');
   }
 }
 
@@ -370,7 +655,7 @@ function resetOut(){
   if(running) return;
   outAuto = true;
   syncOut();
-  setStatus('输出文件夹已回到默认：' + (defaultOut($('src').value) || 'DWG 所在文件夹\\PDF'));
+  setStatus(T('outDefault') + (defaultOut($('src').value) || T('outName')));
 }
 
 /* ---------- 出错要说出来（不能悄悄没反应） ---------- */
@@ -383,12 +668,12 @@ function banner(msg, kind){
   el.textContent = msg;
 }
 window.addEventListener('error', e => {
-  const msg = '页面脚本出错：' + (e.message || e.error);
+  const msg = T('scriptError') + (e.message || e.error);
   if($('log')) logLine('× ' + msg);
   setStatus(msg);
 });
 window.addEventListener('unhandledrejection', e => {
-  const msg = '请求出错：' + ((e.reason && e.reason.message) || e.reason);
+  const msg = T('requestError') + ((e.reason && e.reason.message) || e.reason);
   if($('log')) logLine('× ' + msg);
   setStatus(msg);
 });
@@ -400,11 +685,12 @@ async function ping(){
       banner('');
       const v = $('ver');
       if(v && r.version) v.textContent = 'v' + r.version;
+      /* 后台记着用户上次选的语言；和当前页面不一致就跟着变（多窗口也能同步） */
+      if(r.lang && r.lang !== LANG) applyLang(r.lang, false);
       return true;
     }
   }catch(e){}
-  banner('这个页面已经连不上程序后台了（多半是之前那次运行已退出，或是另一个实例的页面）。'
-       + '关闭本页，重新双击「DWG2PDF.exe」即可。', 'warn');
+  banner(T('offlineLong'), 'warn');
   return false;
 }
 
@@ -415,7 +701,7 @@ function logLine(text){
   let cls = '';
   if (/^\s*[√]/.test(text)) cls = 'ok';
   else if (/^\s*[×]/.test(text)) cls = 'err';
-  else if (text.includes('预览')) cls = 'preview';
+  else if (text.includes('预览') || /\bpreview\b/.test(text)) cls = 'preview';
   else if (/^- /.test(text.trim()) || /^\s+- /.test(text)) cls = 'dim';
   else if (/^\[\d+\/\d+\]/.test(text.trim())) cls = 'head';
   div.className = cls;
@@ -444,10 +730,12 @@ function setStatus(t){
   if(dot) dot.className = 'dot' + (running ? ' run' : '');
 }
 
+let lastCounters = { ok:0, skip:0, fail:0 };
 function updateChips(c){
-  $('cOk').textContent = '成功 ' + (c.ok||0);
-  $('cSkip').textContent = '跳过 ' + (c.skip||0);
-  $('cErr').textContent = '失败 ' + (c.fail||0);
+  lastCounters = c || {};
+  $('cOk').textContent = T('chipOk', c.ok||0);
+  $('cSkip').textContent = T('chipSkip', c.skip||0);
+  $('cErr').textContent = T('chipErr', c.fail||0);
 }
 
 function updateBar(done, total){
@@ -505,10 +793,10 @@ async function startPath(kind){
 async function browse(kind){
   pk.kind = kind;
   pk.cur = ''; pk.sel = ''; pk.parent = ''; pk.items = [];
-  $('pkTitle').textContent = kind === 'src' ? '选择存放 DWG 的文件夹' : '选择 PDF 输出文件夹';
-  $('pkPicked').textContent = '未选择';
+  $('pkTitle').textContent = T(kind === 'src' ? 'pickerTitleSrc' : 'pickerTitleOut');
+  $('pkPicked').textContent = T('notChosen');
   $('pkList').innerHTML = '';
-  $('pkTip').textContent = '正在读取…';
+  $('pkTip').textContent = T('reading');
   $('pkMask').classList.add('show');
   document.body.style.overflow = 'hidden';
   await pkLoad(await startPath(kind));
@@ -523,7 +811,7 @@ function pkCancel(){ pkClose(); }
 
 function pkOk(){
   const p = pk.sel || $('pkPath').value.trim();
-  if(!p){ $('pkTip').innerHTML = '<b>请先选中一个文件夹</b>'; return; }
+  if(!p){ $('pkTip').innerHTML = '<b>' + esc(T('pickFirst')) + '</b>'; return; }
   $(pk.kind).value = p;
   lsPut(pk.kind, p);
   fetch('/api/remember', {
@@ -536,7 +824,7 @@ function pkOk(){
     outAuto = false;
   }
   pkClose();
-  if(!running) setStatus('已选择：' + p);
+  if(!running) setStatus(T('chosen') + p);
 }
 
 async function pkLoad(path, retried){
@@ -546,7 +834,7 @@ async function pkLoad(path, retried){
                     + '&path=' + encodeURIComponent(path || '')).then(x => x.json());
   }catch(e){}
   if(!r){
-    $('pkTip').innerHTML = '<b>无法读取这个文件夹（服务没有响应）</b>';
+    $('pkTip').innerHTML = '<b>' + esc(T('noResponse')) + '</b>';
     return;
   }
   if(!r.ok){
@@ -556,7 +844,7 @@ async function pkLoad(path, retried){
       await pkLoad('', true);
       return;
     }
-    $('pkTip').innerHTML = '<b>' + esc(r.error || '无法读取这个文件夹') + '</b>';
+    $('pkTip').innerHTML = '<b>' + esc(r.error || T('couldNotRead')) + '</b>';
     return;
   }
   pk.cur = r.path;
@@ -586,9 +874,9 @@ function pkRenderSide(places, drives){
     el.onclick = () => pkLoad(path);
     side.appendChild(el);
   };
-  if(places.length) add('常用位置');
+  if(places.length) add(T('placesCommon'));
   places.forEach(p => item(p.name, p.path, ICO_PLACE));
-  if(drives.length) add('此电脑');
+  if(drives.length) add(T('placesDrives'));
   drives.forEach(d => item(d.name, d.path, ICO_DRIVE));
 }
 
@@ -597,8 +885,7 @@ function pkRenderList(r){
   box.innerHTML = '';
   pk.items = [];
   if(!r.dirs.length){
-    box.innerHTML = '<div class="pk-empty">这个文件夹里没有子文件夹<br>' +
-                    '可以直接点右下角「选择这个文件夹」</div>';
+    box.innerHTML = '<div class="pk-empty">' + esc(T('emptyList')) + '</div>';
   }else{
     r.dirs.forEach(d => {
       const el = document.createElement('div');
@@ -613,8 +900,7 @@ function pkRenderList(r){
     });
   }
   const n = r.dwg_count || 0;
-  $('pkTip').innerHTML = '当前文件夹里有 <b>' + n + '</b> 个 DWG（不含子文件夹）。' +
-    (n ? '可以直接选这个文件夹。' : '若图纸在子文件夹里，请进去选。');
+  $('pkTip').innerHTML = T('tipCount', n);
 }
 
 function pkSelect(path, el){
@@ -626,7 +912,7 @@ function pkSelect(path, el){
 
 function pkUp(){
   if(pk.parent) pkLoad(pk.parent);
-  else $('pkTip').innerHTML = '<b>已经是顶层（盘符）了</b>';
+  else $('pkTip').innerHTML = '<b>' + esc(T('atTop')) + '</b>';
 }
 
 function pkGo(){ pkLoad($('pkPath').value.trim()); }
@@ -664,14 +950,14 @@ function mergedMode(){
 
 function prefixHint(){
   const p = $('prefix').value;
-  const ex = mergedMode() ? '某图纸.pdf（用 DWG 的文件名）' : '一层平面图.pdf（用图纸名）';
-  $('nameHint').innerHTML = '命名示例：<code>' + (p || '') + ex + '</code>';
+  const ex = mergedMode() ? T('hintMerged') : T('hintSplit');
+  $('nameHint').innerHTML = T('nameHint') + '<code>' + (p || '') + ex + '</code>';
 }
 
 function syncNameHint(){
   if($('prefix').value) prefixHint();
-  else $('nameHint').innerHTML = '命名示例：<code>'
-    + (mergedMode() ? '某图纸.pdf（用 DWG 的文件名）' : '一层平面图.pdf（用图纸名）') + '</code>';
+  else $('nameHint').innerHTML = T('nameHint') + '<code>'
+    + (mergedMode() ? T('hintMerged') : T('hintSplit')) + '</code>';
 }
 
 async function start(){
@@ -689,17 +975,17 @@ async function start(){
     order_pages: $('order_pages').checked,
     paper: $('paper').value,
   };
-  if(!cfg.src){ alert('请先选择 DWG 所在文件夹'); return; }
+  if(!cfg.src){ alert(T('needSrc')); return; }
 
   clearLog();
   $('bar').style.width = '0%';
   setRunning(true);
-  setStatus('正在提交任务…');
-  logLine('正在提交：' + cfg.src);
+  status('submitting');
+  logLine(T('submittingLog') + cfg.src);
 
   // 后台如果迟迟不回应，也要在日志里说明，别让界面看起来像卡死
   const slow = setTimeout(() => {
-    logLine('（后台正在读取文件夹并启动 AutoCAD，首次约 30 秒，请稍候…）');
+    logLine(T('slowHint'));
   }, 1500);
 
   try{
@@ -710,45 +996,45 @@ async function start(){
     clearTimeout(slow);
 
     if(!r.ok){
-      setRunning(false); setStatus('就绪');
-      logLine('× ' + (r.error || '启动失败'));
-      alert(r.error || '启动失败');
+      setRunning(false); status('ready');
+      logLine('× ' + (r.error || T('startFailed')));
+      alert(r.error || T('startFailed'));
       return;
     }
     cursor = r.seq;
     totalFiles = r.count || 0;
     updateBar(0, totalFiles);
     $('btnOpen').disabled = false;
-    setStatus('已提交，共 ' + totalFiles + ' 个 DWG，正在逐张出图…');
+    status('submitted', totalFiles);
     poll();
   }catch(e){
     clearTimeout(slow);
-    setRunning(false); setStatus('就绪');
-    logLine('× 无法连接本机服务：' + (e && e.message ? e.message : e));
-    banner('这个页面连不上程序后台（服务可能已经退出）。请重新双击「DWG2PDF.exe」。', 'warn');
-    alert('无法连接本机服务，请重新双击「DWG2PDF.exe」。');
+    setRunning(false); status('ready');
+    logLine('× ' + T('cannotConnect') + (e && e.message ? e.message : e));
+    banner(T('offline'), 'warn');
+    alert(T('connectFailAlert'));
   }
 }
 
 async function stop(){
   $('btnStop').disabled = true;
-  setStatus('正在停止…');
+  status('stopping');
   try{ await fetch('/api/stop', {method:'POST'}); }catch(e){}
 }
 
 async function openOut(){
   try{
     const r = await fetch('/api/openout').then(r => r.json());
-    if(!r.ok) alert(r.error || '打开失败');
+    if(!r.ok) alert(r.error || T('openFailed'));
   }catch(e){}
 }
 
 async function quit(){
-  if(running && !confirm('正在转换中，确定退出吗？')) return;
+  if(running && !confirm(T('confirmQuit'))) return;
   try{ await fetch('/api/quit'); }catch(e){}
   document.body.innerHTML =
     '<div style="padding:80px;text-align:center;color:#6b7280;font-size:15px">' +
-    '程序已退出，可以直接关闭这个页面。</div>';
+    esc(T('quitHtml')) + '</div>';
 }
 
 /* ---------- 轮询 ---------- */
@@ -763,19 +1049,19 @@ async function poll(){
         logLine(ev.message);
       }else if(ev.type === 'progress'){
         totalFiles = ev.total || totalFiles;
-        setStatus('正在处理第 ' + ev.current + '/' + ev.total + ' 个：' + ev.dwg);
+        status('processing', ev.current, ev.total, ev.dwg);
         updateBar(ev.current - 1, ev.total);
       }else if(ev.type === 'result'){
         updateBar(d.counters.total || 0, totalFiles);
       }else if(ev.type === 'done'){
         const s = ev.summary || {};
         setRunning(false);
-        setStatus('完成：成功 ' + (s.ok||0) + ' 个，跳过 ' + (s.skip||0) + ' 个，失败 ' + (s.fail||0) + ' 个');
+        status('doneSummary', s.ok||0, s.skip||0, s.fail||0);
         $('bar').style.width = '100%';
         $('btnOpen').disabled = false;
       }else if(ev.type === 'fatal'){
         setRunning(false);
-        setStatus('出错了：' + ev.message);
+        status('errorPrefix', ev.message);
         logLine('× ' + ev.message);
       }
     });
@@ -801,8 +1087,10 @@ async function poll(){
     outAuto = !$('out').value.trim();
   });
   syncOut();
+  applyLang(LANG, false);
   ping();
   syncNameHint();
+  status('ready');
   setInterval(ping, 5000);            // 后台一旦没了，页面立刻提示
   try{
     const d = await fetch('/api/poll?after=0').then(r => r.json());
@@ -815,8 +1103,7 @@ async function poll(){
       $('btnOpen').disabled = false;
     }
   }catch(e){
-    banner('这个页面连不上程序后台（服务可能未启动或已退出）。'
-         + '请重新双击「DWG2PDF.exe」。', 'warn');
+    banner(T('offline'), 'warn');
   }
 })();
 </script>

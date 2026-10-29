@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
 import dwg2pdf
+import i18n
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 打包成 exe 后，附带的数据文件被解压到 sys._MEIPASS 里
@@ -39,7 +40,10 @@ DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
 
 # 版本号：启动时写进 run.log，/api/ping 也会返回，
 # 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
+
+# 界面语言：'zh' / 'en'；空串表示「跟随系统」（存盘里记作 auto）
+LANG_MODE = ""
 
 
 # ----------------------------------------------------------------- 全局状态
@@ -86,7 +90,9 @@ class Hub:
     def start(self, cfg: dict) -> dict:
         with self.lock:
             if self.running:
-                return {"ok": False, "error": "正在转换中，请先等待或点「停止」"}
+                return {"ok": False, "error": i18n.t("正在转换中，请先等待或点「停止」",
+                                                     "A conversion is already running — wait for it "
+                                                     "or press Stop")}
             self.events.clear()
             self.counters = {"ok": 0, "fail": 0, "skip": 0, "total": 0}
             self.finished = False
@@ -95,14 +101,16 @@ class Hub:
         src = (cfg.get("src") or "").strip()
         single = src.lower().endswith(".dwg") and os.path.isfile(src)
         if not single and (not src or not os.path.isdir(src)):
-            return {"ok": False, "error": "请先选择 DWG 所在文件夹（路径不存在）"}
+            return {"ok": False, "error": i18n.t("请先选择 DWG 所在文件夹（路径不存在）",
+                                                 "Choose the DWG folder first (the path does not exist)")}
         base_dir = os.path.dirname(src) if single else src
         out = (cfg.get("out") or "").strip() or os.path.join(base_dir, "PDF")
         out = os.path.normpath(out)
         try:
             os.makedirs(out, exist_ok=True)
         except OSError as exc:
-            return {"ok": False, "error": f"输出文件夹无法创建：{exc}"}
+            return {"ok": False, "error": i18n.t(f"输出文件夹无法创建：{exc}",
+                                                 f"Cannot create the output folder: {exc}")}
 
         if single:
             files = [src]
@@ -110,9 +118,13 @@ class Hub:
             files = dwg2pdf.find_dwg_files(src, bool(cfg.get("recursive", True)),
                                            exclude_dirs=[out])
         if not files:
-            return {"ok": False, "error": "这个文件夹里没有找到 .dwg 文件"
-                                          + ("（已包含子文件夹）" if cfg.get("recursive", True) else "")
-                                          + "，请确认路径。"}
+            return {"ok": False, "error": i18n.t(
+                "这个文件夹里没有找到 .dwg 文件"
+                + ("（已包含子文件夹）" if cfg.get("recursive", True) else "")
+                + "，请确认路径。",
+                "No .dwg file found in this folder"
+                + (" (sub-folders included)" if cfg.get("recursive", True) else "")
+                + " — please check the path.")}
 
         # 手动输入的路径也算「上次干活的文件夹」，下次选文件夹直接从这儿开
         remember("src", base_dir)
@@ -124,9 +136,15 @@ class Hub:
             self.out_dir = out
 
         base = self.seq                         # 这三行日志也要发给页面，别被跳掉
-        self.push({"type": "log", "message": f"待处理 DWG：{len(files)} 个"})
-        self.push({"type": "log", "message": f"输出目录：{out}"})
-        self.push({"type": "log", "message": "正在启动 / 连接 AutoCAD，首次运行约需 30 秒…"})
+        self.push({"type": "log",
+                   "message": i18n.t(f"待处理 DWG：{len(files)} 个",
+                                     f"DWG files to process: {len(files)}")})
+        self.push({"type": "log",
+                   "message": i18n.t(f"输出目录：{out}", f"Output folder: {out}")})
+        self.push({"type": "log",
+                   "message": i18n.t("正在启动 / 连接 AutoCAD，首次运行约需 30 秒…",
+                                     "Starting / connecting to AutoCAD — the first run takes "
+                                     "about 30 s…")})
 
         conv = dwg2pdf.Converter(
             src=src, out=out,
@@ -172,9 +190,12 @@ class Hub:
 
     def stop(self) -> dict:
         if not self.running:
-            return {"ok": False, "error": "当前没有在转换"}
+            return {"ok": False, "error": i18n.t("当前没有在转换",
+                                                 "Nothing is being converted right now")}
         self.cancel_event.set()
-        self.push({"type": "log", "message": "已请求停止，等当前这张图纸出完后结束…"})
+        self.push({"type": "log",
+                   "message": i18n.t("已请求停止，等当前这张图纸出完后结束…",
+                                     "Stop requested — finishing the current sheet first…")})
         return {"ok": True}
 
 
@@ -183,8 +204,9 @@ HUB = Hub()
 
 # ----------------------------------------------------------------- 文件夹选择
 
-def pick_folder(title: str = "选择文件夹") -> str:
+def pick_folder(title: str = "") -> str:
     """弹出 Windows 原生文件夹选择框（阻塞直到用户关掉）"""
+    title = title or i18n.t("选择文件夹", "Choose a folder")
     try:
         import pythoncom
         import win32com.client
@@ -334,13 +356,15 @@ def _places() -> list[dict]:
     """常用位置：桌面 / 文档 / 下载 / 图片 / 用户目录"""
     home = os.path.expanduser("~")
     out: list[dict] = []
-    for name, sub in (("桌面", "Desktop"), ("文档", "Documents"),
-                      ("下载", "Downloads"), ("图片", "Pictures")):
+    for zh, en, sub in (("桌面", "Desktop", "Desktop"),
+                        ("文档", "Documents", "Documents"),
+                        ("下载", "Downloads", "Downloads"),
+                        ("图片", "Pictures", "Pictures")):
         p = os.path.join(home, sub)
         if os.path.isdir(p):
-            out.append({"name": name, "path": p})
+            out.append({"name": i18n.t(zh, en), "path": p})
     if os.path.isdir(home):
-        out.append({"name": "用户目录", "path": home})
+        out.append({"name": i18n.t("用户目录", "Home"), "path": home})
     return out
 
 
@@ -364,7 +388,9 @@ def list_dir(raw: str, kind: str = "") -> dict:
         raw = start_dir(kind)
     path = _clean_path(raw)
     if not os.path.isdir(path):
-        return {"ok": False, "error": "路径不存在或无法访问：" + path,
+        return {"ok": False,
+                "error": i18n.t("路径不存在或无法访问：" + path,
+                                "Path does not exist or is not accessible: " + path),
                 "path": path, "places": _places(), "drives": _drives()}
 
     dirs: list[dict] = []
@@ -386,7 +412,9 @@ def list_dir(raw: str, kind: str = "") -> dict:
                 except OSError:
                     continue
     except PermissionError:
-        return {"ok": False, "error": "没有权限访问这个文件夹",
+        return {"ok": False,
+                "error": i18n.t("没有权限访问这个文件夹",
+                                "Access to this folder is denied"),
                 "path": path, "places": _places(), "drives": _drives()}
     except OSError as exc:
         return {"ok": False, "error": str(exc),
@@ -399,6 +427,31 @@ def list_dir(raw: str, kind: str = "") -> dict:
     _save_state({"browse": path})         # 逛到哪儿记住哪儿，下次从这里接着开
     return {"ok": True, "path": path, "parent": parent, "dirs": dirs,
             "dwg_count": dwg, "places": _places(), "drives": _drives()}
+
+
+# ----------------------------------------------------------------- 语言
+
+def init_lang() -> str:
+    """按「上次的选择 → 系统语言」初始化界面语言"""
+    global LANG_MODE
+    LANG_MODE = i18n.normalize(_load_state().get("lang") or "")
+    return i18n.set_lang(LANG_MODE or i18n.system_lang())
+
+
+def set_lang_mode(mode: str) -> str:
+    """切换语言：'zh' / 'en' / 'auto'（跟随系统）；写盘后立即生效"""
+    global LANG_MODE
+    LANG_MODE = i18n.normalize(mode)
+    lang = i18n.set_lang(LANG_MODE or i18n.system_lang())
+    _save_state({"lang": LANG_MODE or "auto"})
+    return lang
+
+
+def use_lang(mode: str) -> str:
+    """只对本次运行生效、不写盘（启动参数 --lang 用，避免污染用户的选择）"""
+    global LANG_MODE
+    LANG_MODE = i18n.normalize(mode)
+    return i18n.set_lang(LANG_MODE or i18n.system_lang())
 
 
 # ----------------------------------------------------------------- HTTP 服务
@@ -465,11 +518,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             detail = traceback.format_exc()
             traceback.print_exc()
-            _logfile("后台异常：" + detail)
+            _logfile(i18n.t("后台异常：", "Backend exception: ") + detail)
         except Exception:
             pass
         try:
-            self._json({"ok": False, "error": f"后台处理出错：{exc}"}, 500)
+            self._json({"ok": False,
+                        "error": i18n.t(f"后台处理出错：{exc}", f"Backend error: {exc}")}, 500)
         except Exception:
             pass
 
@@ -483,7 +537,8 @@ class Handler(BaseHTTPRequestHandler):
                     query[k] = v
 
         if path in ("/", "/index.html"):
-            _logfile(f"页面载入（端口 {Handler.port}）")
+            _logfile(i18n.t(f"页面载入（端口 {Handler.port}）",
+                            f"page loaded (port {Handler.port})"))
             try:
                 with open(UI_FILE, "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
@@ -505,7 +560,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/ping":
             self._json({"ok": True, "app": "dwg2pdf", "pid": os.getpid(),
                         "version": APP_VERSION,
-                        "port": Handler.port, "running": HUB.running})
+                        "port": Handler.port, "running": HUB.running,
+                        "lang": i18n.get_lang(),
+                        "lang_mode": LANG_MODE or "auto",
+                        "system_lang": i18n.system_lang()})
             return
 
         if path == "/api/ls":
@@ -514,13 +572,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(list_dir(target, kind))
             return
 
+        if path == "/api/lang":
+            self._json({"ok": True, "lang": i18n.get_lang(),
+                        "lang_mode": LANG_MODE or "auto"})
+            return
+
         if path == "/api/lastdir":
             self._json({"ok": True, "path": start_dir(unquote(query.get("kind", "")))})
             return
 
         if path == "/api/browse":
             kind = "src" if query.get("kind") == "src" else "out"
-            title = "选择存放 DWG 的文件夹" if kind == "src" else "选择 PDF 输出文件夹"
+            title = (i18n.t("选择存放 DWG 的文件夹", "Choose the folder holding the DWGs")
+                     if kind == "src"
+                     else i18n.t("选择 PDF 输出文件夹", "Choose the PDF output folder"))
             picked = pick_folder(title)
             if picked:
                 remember(kind, picked)
@@ -533,7 +598,9 @@ class Handler(BaseHTTPRequestHandler):
                 os.startfile(out)            # noqa: S606
                 self._json({"ok": True})
             else:
-                self._json({"ok": False, "error": "输出文件夹还不存在"})
+                self._json({"ok": False,
+                            "error": i18n.t("输出文件夹还不存在",
+                                            "The output folder does not exist yet")})
             return
 
         if path == "/api/quit":
@@ -547,13 +614,19 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/start":
             cfg = self._read_json()
-            _logfile("收到开始请求：src=" + str(cfg.get("src"))
+            _logfile(i18n.t("收到开始请求：src=", "start requested: src=") + str(cfg.get("src"))
                      + " | out=" + str(cfg.get("out")))
             res = HUB.start(cfg)
-            _logfile("开始请求返回：" + json.dumps(res, ensure_ascii=False))
+            _logfile(i18n.t("开始请求返回：", "start returned: ") + json.dumps(res, ensure_ascii=False))
             self._json(res)
         elif path == "/api/stop":
             self._json(HUB.stop())
+        elif path == "/api/lang":
+            body = self._read_json()
+            lang = set_lang_mode(str(body.get("lang") or ""))
+            _logfile(i18n.t(f"语言切换为 {lang}（{LANG_MODE or 'auto'}）",
+                            f"language switched to {lang} ({LANG_MODE or 'auto'})"))
+            self._json({"ok": True, "lang": lang, "lang_mode": LANG_MODE or "auto"})
         elif path == "/api/remember":
             body = self._read_json()
             remember(str(body.get("kind") or ""), str(body.get("path") or ""))
@@ -624,10 +697,21 @@ def _close_instance(port: int, pid: int = 0) -> bool:
 
 def main():
     if not os.path.isfile(UI_FILE):
-        raise SystemExit(f"找不到界面文件：{UI_FILE}")
+        raise SystemExit(i18n.t(f"找不到界面文件：{UI_FILE}",
+                                f"UI file not found: {UI_FILE}"))
 
     args = sys.argv[1:]
     no_open = "--no-open" in args
+
+    # --lang zh|en|auto 只影响本次运行（也给自动化测试用）；
+    # 否则用上次在界面上选的语言，没选过就跟系统语言走
+    if "--lang" in args:
+        try:
+            use_lang(args[args.index("--lang") + 1])
+        except (ValueError, IndexError):
+            init_lang()
+    else:
+        init_lang()
     port_pref = 8791
     if "--port" in args:
         try:
@@ -645,24 +729,34 @@ def main():
             old_ver = str(info.get("version") or "")
             if old_ver == APP_VERSION:
                 url = f"http://127.0.0.1:{alive}/"
-                print(f"已有实例在运行：{url}")
-                _logfile(f"发现同版本实例 v{APP_VERSION}，直接复用：{url}")
+                print(i18n.t(f"已有实例在运行：{url}",
+                             f"An instance is already running: {url}"))
+                _logfile(i18n.t(f"发现同版本实例 v{APP_VERSION}，直接复用：{url}",
+                                f"same version v{APP_VERSION} already running, reusing {url}"))
                 if not no_open:
                     webbrowser.open(url)
                 return
-            print(f"发现旧版本实例（v{old_ver or '未知'}），自动关闭后启动新版本…")
-            _logfile(f"发现旧版本实例（v{old_ver or '未知'}，PID {info.get('pid')}），"
-                     f"已关闭并启动 v{APP_VERSION}")
+            unknown = i18n.t("未知", "unknown")
+            print(i18n.t(f"发现旧版本实例（v{old_ver or unknown}），自动关闭后启动新版本…",
+                         f"An older instance is running (v{old_ver or unknown}); "
+                         f"closing it and starting the new version…"))
+            _logfile(i18n.t(f"发现旧版本实例（v{old_ver or unknown}，PID {info.get('pid')}），"
+                            f"已关闭并启动 v{APP_VERSION}",
+                            f"older instance v{old_ver or unknown} (PID {info.get('pid')}) closed, "
+                            f"starting v{APP_VERSION}"))
             _close_instance(alive, int(info.get("pid") or 0))
             port_pref = alive
 
     port = _free_port(port_pref)
     Handler.port = port
-    _logfile(f"程序启动 v{APP_VERSION}（PID {os.getpid()}，端口 {port}）")
+    _logfile(i18n.t(f"程序启动 v{APP_VERSION}（PID {os.getpid()}，端口 {port}，语言 {i18n.get_lang()}）",
+                    f"app started v{APP_VERSION} (PID {os.getpid()}, port {port}, "
+                    f"lang {i18n.get_lang()})"))
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
-    print(f"服务已启动：{url}")
-    print("关闭这个窗口即可结束程序。")
+    print(i18n.t(f"服务已启动：{url}", f"Server started: {url}"))
+    print(i18n.t("关闭这个窗口即可结束程序。",
+                 "Close this window to stop the program."))
     if not no_open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
@@ -691,6 +785,8 @@ if __name__ == "__main__":
             pass
         try:
             ctypes.windll.user32.MessageBoxW(
-                0, f"启动失败：\n\n{detail[-600:]}", "DWG 批量转 PDF", 0x10)
+                0, i18n.t(f"启动失败：\n\n{detail[-600:]}",
+                          f"Failed to start:\n\n{detail[-600:]}"),
+                i18n.t("DWG 批量转 PDF", "DWG Batch to PDF"), 0x10)
         except Exception:
             pass
