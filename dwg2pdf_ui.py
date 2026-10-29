@@ -39,7 +39,7 @@ DATA_DIR = HERE if not getattr(sys, "frozen", False) else os.path.dirname(
 
 # 版本号：启动时写进 run.log，/api/ping 也会返回，
 # 这样「换了新 exe 但后台还是老进程」的情况能一眼看出来
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 
 
 # ----------------------------------------------------------------- 全局状态

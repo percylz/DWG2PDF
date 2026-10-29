@@ -883,14 +883,17 @@ class AcadPlotter:
                 if w <= 0 or h <= 0:
                     continue
                 # 同一块名的尺寸一般完全一致，取整到「块单位的 0.1」归堆
-                groups.setdefault((name, round(w, 1), round(h, 1)), []).append(b)
+                # 连 idx 一起存：后面要按块参照算「内容签名」，判断是不是重复图框
+                groups.setdefault((name, round(w, 1), round(h, 1)),
+                                  []).append((b, idx))
 
         # 顺序说明：pick_scale 已经挑过，这里不再重复筛；后续按覆盖面积挑最佳组
 
         best_group = None
-        for key, rects in groups.items():
-            if len(rects) < 2:
+        for key, items in groups.items():
+            if len(items) < 2:
                 continue
+            rects = [it[0] for it in items]
             name, w_units, h_units = key
             scaled = pick_scale(w_units, h_units)
             if not scaled:
@@ -926,16 +929,68 @@ class AcadPlotter:
             if not ok:
                 continue
             if best_group is None or len(rects) > len(best_group[1]):
-                best_group = ((name, wmm, hmm, _scale), rects)
+                best_group = ((name, wmm, hmm, _scale), rects, [it[1] for it in items])
 
         if not best_group:
             return []
-        (name, wmm, hmm, scale), rects = best_group
+        (name, wmm, hmm, scale), rects, idxs = best_group
         self.log(f"  （没找到图框块，但识别到 {len(rects)} 个同款整图纸块「{name}」"
                  f"{round(wmm)}x{round(hmm)} mm，按它拆成 {len(rects)} 张图）")
+        self._warn_duplicate_blocks(ss, idxs, name)
         return [{"paper": self._paper_label(wmm, hmm), "paper_mm": (wmm, hmm),
                  "scale": scale, "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
                 for b in rects]
+
+    def _block_signature(self, ss, idx: int):
+        """
+        整图纸块的「内容签名」= 块定义名 + 该块参照的属性值。
+
+        同一个块定义的所有实例，几何和块内文字必然一模一样；差异只能来自属性
+        （图号、图名、日期这类）。所以「块名相同 + 属性值全相同」⇒ 两张图完全一样。
+
+        返回 None 表示属性读不到（CAD 忙/块已损坏），这种不参与比对，免得误报。
+        """
+        def read():
+            e = ss.Item(idx)
+            try:
+                nm = e.EffectiveName
+            except Exception:                       # noqa: BLE001
+                nm = e.Name
+            try:
+                attrs = e.GetAttributes()
+            except Exception:                       # noqa: BLE001
+                return None
+            vals = []
+            for a in attrs or ():
+                try:
+                    vals.append((str(a[0]), str(a[1])))
+                except Exception:                   # noqa: BLE001
+                    continue
+            return (str(nm), tuple(sorted(vals)))
+
+        return com_get(read, None)
+
+    def _warn_duplicate_blocks(self, ss, idxs, name: str) -> None:
+        """
+        拆页后核对：同款整图纸块里，如果有两个连属性值都一样，就提示「重复图框」。
+
+        实测（泰国数据中心第二批 3-IP GW- FWU1-01 等 3 个文件）：布局里并排贴了
+        两个一模一样的图框，拆页后第 17、18 页完全相同——这是图纸的问题，
+        不是程序出的错，但审核前应该看得见，所以这里记一条日志。只提示，不改行为。
+        """
+        seen: dict[tuple, list[int]] = {}
+        for pos, idx in enumerate(idxs):
+            sig = self._block_signature(ss, idx)
+            if sig is None:
+                continue
+            seen.setdefault(sig, []).append(pos + 1)
+        for sig, pages in seen.items():
+            if len(pages) < 2:
+                continue
+            where = "、".join(f"第 {p} 张" for p in pages)
+            extra = f"，{len(sig[1])} 项属性也一致" if sig[1] else ""
+            self.log(f"  ⚠ 疑似重复图框：{where}图内容完全相同"
+                     f"（块「{name}」{extra}），请核对图纸")
 
     def _dedupe_frames(self, frames: list[dict]) -> list[dict]:
         """同一张图既有块又有外框时只留一个（块优先，因为能确定图幅）"""
