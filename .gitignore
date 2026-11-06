@@ -2,6 +2,7 @@
 run.log
 run.log.old
 start_error.log
+build*.log
 dwg2pdf_state.json
 dwg2pdf_state.json.tmp
 *.pdf
