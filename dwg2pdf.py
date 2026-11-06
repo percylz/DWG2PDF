@@ -966,6 +966,163 @@ class AcadPlotter:
                  "scale": scale, "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
                 for b in rects]
 
+    def _block_has_text(self, doc, block_name: str) -> bool:
+        """块定义里有没有文字（标题栏一定有；纯图形块没有）。只看前 400 个实体。"""
+        if not hasattr(self, "_blk_text_cache"):
+            self._blk_text_cache = {}
+        if block_name in self._blk_text_cache:
+            return self._blk_text_cache[block_name]
+        found = False
+        try:
+            blk = doc.Blocks.Item(block_name)
+            for i in range(min(int(blk.Count), 400)):
+                try:
+                    if str(blk.Item(i).EntityName) in ("AcDbMText", "AcDbText",
+                                                       "AcDbAttributeDefinition"):
+                        found = True
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            found = False
+        self._blk_text_cache[block_name] = found
+        return found
+
+    @staticmethod
+    def _insert_rect_box(ss, idx: int, rect) -> Optional[tuple]:
+        """块定义里的矩形 → 该块参照在模型空间里的包围盒（已算缩放和旋转）"""
+        import math
+        e = ss.Item(idx)
+        p = e.InsertionPoint
+        sx, sy = float(e.XScaleFactor), float(e.YScaleFactor)
+        rot = float(e.Rotation)
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
+        xs, ys = [], []
+        for bx, by in ((rect[0], rect[1]), (rect[2], rect[1]),
+                       (rect[2], rect[3]), (rect[0], rect[3])):
+            bx, by = bx * sx, by * sy
+            xs.append(p[0] + bx * cos_r - by * sin_r)
+            ys.append(p[1] + bx * sin_r + by * cos_r)
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _frames_from_repeated_frames(self, doc) -> list[dict]:
+        """
+        还有一种画法：**把「图框 + 标题栏」本身做成一个块**，复制 N 份上下（或左右）
+        排开，而块名里根本不写图幅——例如整份图纸里那个块就叫 `1213`。
+
+        实测 JHB01-BLKA1-DR-E-10200（DATAHALL BLOCK A1 LIGHTING LAYOUT）就是这样：
+        `1213` 块 148600x84100 图形单位（1:100 下 1486x841 mm），复制了 3 份上下排开，
+        块内有 27 段文字（标题栏）+ 图框线。旧逻辑认不出它，只能整片模型空间出一页，
+        3 张图缩成指甲盖大小挤在 A1 正中（墨迹 0.37%）。
+
+        认的条件（全部满足）：
+        - 同名块 ≥2 个，且尺寸一致（差 ≤2%）；
+        - 块定义里最大的闭合矩形（= 图框线）短边 ≥2000 图形单位、长宽比 1.0~2.4（像张纸）；
+        - 块定义里有文字（标题栏）；
+        - 这些框互不重叠（重叠说明是同一个位置的重复粘贴，不是并排的图纸）。
+
+        图幅没法从块名推，就按界面上选的纸出（默认 A1），等比布满整页。
+        """
+        ss, by_name, total = self._insert_index(doc)
+        if ss is None or total < 2:
+            return []
+        choice = (getattr(self, "paper_size", "") or "").upper()
+        if choice not in PAPER_SIZES:
+            choice = "A1"
+        paper_mm = PAPER_SIZES[choice]
+
+        best = None
+        for name, idxs in by_name.items():
+            if len(idxs) < 2:
+                continue
+            rect = self._block_frame_rect(doc, name)
+            if not rect:
+                continue
+            rw, rh = rect[2] - rect[0], rect[3] - rect[1]
+            if rw <= 0 or rh <= 0:
+                continue
+            lo, hi = min(rw, rh), max(rw, rh)
+            if lo < 2000:                      # 太小：是图例/表格，不是整张图纸
+                continue
+            if not (1.0 <= hi / lo <= 2.4):
+                continue
+            if not self._block_has_text(doc, name):
+                continue
+
+            boxes = []
+            for idx in idxs:
+                b = com_get(lambda idx=idx: self._insert_rect_box(ss, idx, rect), None)
+                if b:
+                    boxes.append(b)
+            if len(boxes) < 2:
+                continue
+            # 尺寸必须一致，否则不是「同一张图框复制出来的」
+            w0, h0 = boxes[0][2] - boxes[0][0], boxes[0][3] - boxes[0][1]
+            if any(abs((b[2] - b[0]) - w0) > w0 * 0.02
+                   or abs((b[3] - b[1]) - h0) > h0 * 0.02 for b in boxes):
+                continue
+            overlap = False
+            for i in range(len(boxes)):
+                for j in range(i + 1, len(boxes)):
+                    a, c = boxes[i], boxes[j]
+                    ix = min(a[2], c[2]) - max(a[0], c[0])
+                    iy = min(a[3], c[3]) - max(a[1], c[1])
+                    if ix > 0 and iy > 0 and ix * iy > 0.3 * w0 * h0:
+                        overlap = True
+                        break
+                if overlap:
+                    break
+            if overlap:
+                continue
+            if best is None or len(boxes) > len(best[1]):
+                best = (name, boxes, idxs)
+
+        if not best:
+            return []
+        name, boxes, idxs = best
+        w0, h0 = boxes[0][2] - boxes[0][0], boxes[0][3] - boxes[0][1]
+        self.log(tr(f"  （图框和标题栏做成了同款块「{name}」，出现 {len(boxes)} 次，"
+                    f"按它拆成 {len(boxes)} 张图，图幅按 {choice} 布满）",
+                    f"  (frame + title block are one repeated block \"{name}\" "
+                    f"({len(boxes)} instances) — splitting into {len(boxes)} sheets, "
+                    f"fitted to {choice})"))
+        # 这里不做「重复图框」告警：重复的只是图框本身，图面内容画在块外面，
+        # 每个实例的图都不一样（_sheets_from_title_blocks 那种「整张图纸做成块」
+        # 才需要比对签名）。
+        self._warn_frames_miss_content(doc, [(b[0], b[1], b[2], b[3]) for b in boxes])
+        return [{"paper": choice, "paper_mm": paper_mm, "scale": None,
+                 "x0": b[0], "x1": b[2], "y0": b[1], "y1": b[3]}
+                for b in boxes]
+
+    def _warn_frames_miss_content(self, doc, rects: list) -> None:
+        """
+        图框没盖住整片模型空间时提醒一句。
+
+        实测会有这种情况：一份图里 3 张带图框的图纸，同时还留着一张没图框的平面
+        （底图/工作视图）。只出带框的 3 张是对的，但不能悄悄少一张——用户会以为是
+        程序漏了。EXTMIN/EXTMAX 只是参考值（别处有杂散对象时会偏大），所以只提示不拦。
+        """
+        if not rects:
+            return
+        try:
+            mn = doc.GetVariable("EXTMIN")
+            mx = doc.GetVariable("EXTMAX")
+            ex0, ey0, ex1, ey1 = float(mn[0]), float(mn[1]), float(mx[0]), float(mx[1])
+        except Exception:
+            return
+        if ex1 <= ex0 or ey1 <= ey0:
+            return
+        ux0 = min(r[0] for r in rects); uy0 = min(r[1] for r in rects)
+        ux1 = max(r[2] for r in rects); uy1 = max(r[3] for r in rects)
+        slack_x = (ux1 - ux0) * 0.05
+        slack_y = (uy1 - uy0) * 0.05
+        if ex0 < ux0 - slack_x or ey0 < uy0 - slack_y \
+                or ex1 > ux1 + slack_x or ey1 > uy1 + slack_y:
+            self.log(tr("  ⚠ 模型空间里还有图框之外的内容，不会出图"
+                        "（如有遗漏，请核对图纸或用「强制按图框拆分」）",
+                        "  ⚠ model space has content outside these frames — it will not be "
+                        "plotted (check the drawing, or use force-frame-splitting)"))
+
     def _block_signature(self, ss, idx: int):
         """
         整图纸块的「内容签名」= 块定义名 + 该块参照的属性值。
@@ -1176,6 +1333,12 @@ class AcadPlotter:
             frames = self._sheets_from_title_blocks(doc)
             if frames:
                 source = tr("整图纸块", "full-sheet blocks")
+        if not frames:
+            # 再试「图框+标题栏本身就是一个块、复制了 N 份」，块名里没写图幅
+            # （JHB01 LIGHTING LAYOUT 是这种画法：块名就叫 1213）
+            frames = self._frames_from_repeated_frames(doc)
+            if frames:
+                source = tr("重复图框块", "repeated frame blocks")
         if not frames:
             return []
         frames = self._dedupe_frames(frames)
@@ -2006,6 +2169,7 @@ class AcadPlotter:
     def _reset_cache(self):
         self._text_cache = None
         self._rect_cache = {}
+        self._blk_text_cache = {}      # 块定义里有没有文字（判断标题栏）
         self._insert_cache = None      # 块参照名字索引（每个 DWG 只建一次）
         self._text_pos_cache = None    # 文字插入点索引
         self._fonts_repaired = False
@@ -2023,9 +2187,14 @@ class AcadPlotter:
         if self.frames_mode != "layouts":
             # 默认只在「图纸布局都是空的」时才拆图框——那正是「多张图全排在模型空间」的画法；
             # 布局里已经有内容的图，仍按布局输出，保持原有行为。
+            # 「空」按去掉视口后的实体数算：只有一个视口的布局等于什么都没画。
             use_frames = self.frames_mode == "frames"
             if not use_frames:
-                use_frames = all(self._layout_entity_count(doc, n) == 0 for n in layouts)
+                use_frames = all(self._layout_content_count(doc, n) == 0 for n in layouts)
+                if use_frames and any(self._layout_entity_count(doc, n) for n in layouts):
+                    self.log(tr("  · 布局里只有视口、没有图面内容，按模型空间出图",
+                                "  · the layout(s) contain only viewports — "
+                                "plotting from model space instead"))
             if use_frames:
                 sheets = []
                 for attempt in range(3):
@@ -2156,6 +2325,35 @@ class AcadPlotter:
             return int(doc.Layouts.Item(name).Block.Count)
         except Exception:
             return 0
+
+    @staticmethod
+    def _layout_content_count(doc, name: str) -> int:
+        """
+        布局里「真正的图面内容」有多少——**视口不算内容**。
+
+        空布局在 AutoCAD 里并不是 0 个实体：系统会给它留一个（有时两个）视口。
+        只看 Block.Count 会把「只有一个视口、什么都没画」的布局当成有内容，
+        于是整份图纸按这个布局出图——而那个视口往往缩放到 1:11000 之类，
+        结果就是十几张图被压成指甲盖大小挤在一页上（JHB01 那份 LIGHTING LAYOUT
+        就是这么错的：布局里 2 个实体全是 AcDbViewport）。
+        """
+        try:
+            blk = doc.Layouts.Item(name).Block
+            n = int(blk.Count)
+        except Exception:
+            return 0
+        if n <= 0:
+            return 0
+        real = 0
+        # 正常布局里内容不会上万；真遇到超大布局就不必逐个数了，按「有内容」处理
+        for i in range(min(n, 3000)):
+            try:
+                if str(blk.Item(i).ObjectName) == "AcDbViewport":
+                    continue
+            except Exception:
+                pass
+            real += 1
+        return real
 
     def export_drawing(self, dwg_path: str, namer: Callable[[list[dict]], list[tuple[dict, str]]],
                        skip_existing: bool = False,

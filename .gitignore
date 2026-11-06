@@ -24,6 +24,9 @@ dist/
 *-便携版.zip
 *-portable.zip
 
+# ---- POC 产物（tools/poc_ocs_plot.py 的输出） ----
+poc_out/
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
