@@ -2467,6 +2467,42 @@ class AcadPlotter:
                         f"temporarily substituted (otherwise that text would not plot)"))
         return fixed
 
+    def repair_ole_plot_quality(self, doc) -> int:
+        """
+        OLE 对象（尤其是 Picture (Metafile) 这类静态图片，如能耗监测点表）默认的
+        OlePlotQuality 是 0（最低质量）。用 monochrome.ctb 出图时，低质量光栅化会
+        把图元文件里的彩色填充单元格糊成一大片纯黑，整张表看不清。
+
+        实测浙大一院余杭院区「4、数智机电系统图」第 30–34 张：5 个 OLE 图元文件，
+        OlePlotQuality=0 时中间三分之二纯黑；改成 2（最高质量）后表格完整显示。
+
+        这里把它们临时提到 2，只在内存里改，不保存原图。
+        """
+        if getattr(self, "_ole_quality_repaired", False):
+            return 0
+        self._ole_quality_repaired = True
+
+        fixed = 0
+        try:
+            for e in doc.ModelSpace:
+                if getattr(e, "EntityName", "") != "AcDbOle2Frame":
+                    continue
+                try:
+                    if int(getattr(e, "OlePlotQuality", 0)) >= 2:
+                        continue
+                    e.OlePlotQuality = 2
+                    fixed += 1
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if fixed:
+            self.log(tr(f"    · 图里有 {fixed} 个 OLE 对象出图质量过低，"
+                        f"已临时提升，否则会糊成黑块",
+                        f"    · {fixed} OLE object(s) had low plot quality; "
+                        f"raised so they don't plot as black blobs"))
+        return fixed
+
     @staticmethod
     def _layout_entity_count(doc, name: str) -> int:
         """布局（图纸空间）里有多少实体；0 表示这是个空布局"""
@@ -2529,6 +2565,7 @@ class AcadPlotter:
                 self._setvar(doc, var, value)
 
             self.repair_missing_fonts(doc)
+            self.repair_ole_plot_quality(doc)
             targets = com_retry(lambda: self._targets(doc))
             plan = namer(targets)
 
@@ -2601,6 +2638,7 @@ class AcadPlotter:
             self._reset_cache()
             self._wait_doc_ready(doc)
             self.repair_missing_fonts(doc)
+            self.repair_ole_plot_quality(doc)
             plan = namer(com_retry(lambda: self._targets(doc)))
         finally:
             try:
