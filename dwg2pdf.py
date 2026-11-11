@@ -66,9 +66,13 @@ PAPER_SIZES = {
     "A4": (297, 210),
 }
 # 常见出图比例，用于把「模型空间里的图框尺寸」还原成图幅
-KNOWN_SCALES = (1, 2, 2.5, 5, 10, 20, 25, 30, 40, 50, 75, 100, 125, 150,
-                200, 250, 300, 400, 500, 600, 750, 1000, 1500, 2000)
+KNOWN_SCALES = (1, 2, 2.5, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 100,
+                110, 120, 125, 130, 150, 160, 175, 180, 200, 250, 300, 350,
+                400, 500, 600, 750, 1000, 1500, 2000)
 FRAME_BLOCK = re.compile(r"^A[0-4]$", re.I)          # 图框块命名约定：A0 / A1 / A2 / A3 / A4
+# 块名里直接写着「图框/图幅」的（中望/天正/各家插件的图框块都这么命名），
+# 名字里那一串数字是插件给的 ID，不是图幅尺寸，只能靠几何还原图幅
+FRAME_WORD = re.compile(r"(图框|图幅|标题栏|title\s*block|drawing\s*frame)", re.I)
 # PDF 内容流里的算子：出图判空用（见 AcadPlotter._pdf_page_is_empty）
 TEXT_SHOW = re.compile(rb"(?:\bTj\b|\bTJ\b)")          # 显示文字
 PATH_BUILD = re.compile(rb"(?:\d\s+[mlc]\b|\bre\b)")   # 画线/曲线/矩形
@@ -629,6 +633,97 @@ class AcadPlotter:
                     frames.append(f)
         return frames
 
+    def _paper_scale_from_units(self, w_units: float, h_units: float):
+        """
+        「图框在模型空间里的图形单位尺寸」→ (纸幅 mm, 出图比例)。
+
+        走的是「找最能解释这个尺寸的那张纸」：长宽比要对得上纸的比例（2% 内），
+        并且按 KNOWN_SCALES 里某个比例换算回毫米后，长边和短边的误差都在 2% 内。
+        取误差最小的那个组合。
+
+        为什么用误差最小而不是「必须严丝合缝」：块参照的包围盒会把框外那点文字
+        （图号露头、修订云线）也算进去，短边可能多出两三毫米。要求 2 mm 以内会让
+        整张图被漏掉；放宽到 2% （A0 上是 17 mm）既能容下这种溢出，又远小于
+        「差一张图」的量级。
+        """
+        long_u, short_u = max(w_units, h_units), min(w_units, h_units)
+        if long_u <= 0 or short_u <= 0:
+            return None
+        ar = long_u / short_u
+        if not (1.0 <= ar <= 1.85):        # 比 A1 加长（1.77）还扁，不是一张纸
+            return None
+        best = None
+        for paper, (pw, ph) in PAPER_SIZES.items():
+            p_long, p_short = max(pw, ph), min(pw, ph)
+            if abs(ar - p_long / p_short) > 0.02 * ar:
+                continue                    # 这张纸的比例不对
+            scale = long_u / p_long
+            if not (0.5 <= scale <= 3000):
+                continue
+            near = min(KNOWN_SCALES, key=lambda k: abs(k - scale) / k)
+            err = max(abs(long_u / near - p_long) / p_long,
+                      abs(short_u / near - p_short) / p_short)
+            if err > 0.02:
+                continue                    # 按这个比例换算回去差得太多
+            if best is None or err < best[0]:
+                best = (err, paper, (p_long, p_short), near)
+        if not best:
+            return None
+        return best[2], best[3]
+
+    def _frames_from_frame_named_blocks(self, doc) -> list[dict]:
+        """
+        图框块的块名里只写了「图框」两个字、没写图幅的，靠几何还原图幅。
+
+        实测浙大一院余杭院区「4、数智机电系统图」：34 个 A0 图框块，块名形如
+        `GeYuanFrame_88887876_智能化(弱电)_E图框`（中望/天正这类插件导出时给每个
+        图框换了个带 ID 的新块名），块定义里就是 1:1 的 A0 图框线，插入时按
+        1:100 / 1:120 / 1:130 缩放。旧逻辑要求块名里带 A0-A4 或「图幅尺寸」数字，
+        这一串 88887876 一个都匹配不上，于是退回「按矩形识别」，把图里的表格框
+        当成 4 张图纸，34 张图只出了 3 页。
+
+        图框位置一律用**块参照自己的包围盒**，不去翻块定义里的矩形：这批块定义里
+        有两个同样大小（1189x841）的闭合矩形，一个贴着块原点（真图框）、一个整体
+        平移了 1633x1311。按「面积最大」取会拿到平移的那一个，窗口就整体偏出去
+        160 多米，图面内容全在窗外——34 张里 20 张被判成空白。
+        """
+        ss, by_name, total = self._insert_index(doc)
+        if ss is None or not by_name:
+            return []
+        frames = []
+        for name, idxs in by_name.items():
+            if not FRAME_WORD.search(name or ""):
+                continue
+            rect = self._block_frame_rect(doc, name)
+            if not rect:
+                continue
+            if min(rect[2] - rect[0], rect[3] - rect[1]) < 100:
+                continue                    # 块定义里的图例/小表格，不是图框
+            for idx in idxs:
+                box = com_get(lambda idx=idx: self._insert_bbox(ss, idx), None)
+                if not box:
+                    continue
+                parsed = self._paper_scale_from_units(box[2] - box[0], box[3] - box[1])
+                if not parsed:
+                    continue
+                paper_mm, scale = parsed
+                frames.append({"paper": self._paper_label(*paper_mm),
+                               "paper_mm": paper_mm, "scale": scale,
+                               "x0": box[0], "x1": box[2],
+                               "y0": box[1], "y1": box[3]})
+        if frames:
+            self.log(tr(f"  （按块名里的「图框」识别到 {len(frames)} 个图框，图幅由尺寸反推）",
+                        f"  (found {len(frames)} frame blocks by their \"frame\" name — "
+                        f"paper size derived from geometry)"))
+        return frames
+
+    @staticmethod
+    def _insert_bbox(ss, idx: int) -> Optional[tuple]:
+        """块参照在模型空间里的包围盒（含块内全部几何，已算缩放和旋转）"""
+        mn, mx = ss.Item(idx).GetBoundingBox()
+        return (min(mn[0], mx[0]), min(mn[1], mx[1]),
+                max(mn[0], mx[0]), max(mn[1], mx[1]))
+
     def _frame_from_insert(self, ss, idx: int, name: str, rect) -> Optional[dict]:
         """一个块参照 + 它的块定义矩形 → 图框字典（模型坐标，已算缩放和旋转）"""
         import math
@@ -668,11 +763,19 @@ class AcadPlotter:
 
     @staticmethod
     def _is_known_sheet_mm(width_mm: float, height_mm: float) -> bool:
-        """短边是标准 A 系列的尺寸，就当成图幅（含 A1 加长这类长边变长的）"""
+        """
+        短边是标准 A 系列的尺寸，就当成图幅（含 A1 加长这类长边变长的）。
+
+        长边不能无限长：A1 加长 1051x594 的比例是 1.77，再长就不像一张纸了。
+        实测（浙大一院余杭院区「数智机电系统图」）图里有个 452x209 mm 的表格框，
+        短边 209 与 A4 的 210 只差 1 mm，旧逻辑靠 ±2 mm 容差把它认成「加长图幅」，
+        结果整份 34 张图纸只出了 3 页。加一条长宽比 ≤1.85 就挡住了。
+        """
         short_ = min(width_mm, height_mm)
         long_ = max(width_mm, height_mm)
         return (any(abs(short_ - v) <= 2 for v in (210, 297, 420, 594, 841, 1189))
-                and long_ >= short_ - 2)
+                and long_ >= short_ - 2
+                and long_ <= short_ * 1.85)
 
     def _paper_from_block_name(self, name: str, w_units: float, h_units: float):
         """
@@ -1325,6 +1428,11 @@ class AcadPlotter:
         frames = self._frames_from_blocks(doc)
         source = tr("块", "blocks")
         if not frames:
+            # 图框块的名字里只有「图框」两个字、没有图幅（插件给每个图框都换了带 ID
+            # 的新块名），靠几何把图幅反推出来
+            frames = self._frames_from_frame_named_blocks(doc)
+            source = tr("图框块", "frame blocks")
+        if not frames:
             frames = self._frames_from_polylines(doc)
             source = tr("矩形", "rectangles")
         if not frames:
@@ -1463,8 +1571,19 @@ class AcadPlotter:
                      if abs(max(mw, mh) - t_long) <= 2 and abs(min(mw, mh) - t_short) <= 2]
             if exact:
                 same = [n for n in exact if self._media_landscape(n) == want_landscape]
-                pick = same[0] if same else exact[0]
-                return pick, self._media_landscape(pick), True
+                if same:
+                    return same[0], self._media_landscape(same[0]), True
+                # 只有方向不对的那一版纸（DWG To PDF 的 A0 只有 841x1189 竖版）：
+                # 换成「长边正好等于图纸短边」的小一号横版纸，靠「布满图纸」得到
+                # 同样大小的图，还省掉上下两大条白边——1189x841 的横图出在竖 A0 上，
+                # 实际画幅本来就只有 841x594（等比缩到 0.707），跟 A1 横版一模一样。
+                if want_landscape:
+                    alt = [n for n in pool if self._media_landscape(n) is True
+                           and abs(max(self._media_size(n)) - t_short) <= 2]
+                    if alt:
+                        alt.sort(key=lambda n: max(self._media_size(n)))
+                        return alt[0], True, False
+                return exact[0], self._media_landscape(exact[0]), True
             # 短边一致就用它（加长图幅走这里）：长边取最接近原图的纸张
             near = [(n, self._media_size(n)) for n in pool
                     if abs(min(self._media_size(n)) - t_short) <= 2]
@@ -1866,9 +1985,13 @@ class AcadPlotter:
             if meta_tag and sheet.get("paper_mm"):
                 self._note_paper_choice(meta_tag, sheet["paper_mm"], meta_mm)
             elif not media_exact:
-                self.log(tr(f"    · 图幅 {sheet['paper']} 没有对应纸张，按 {media} 缩放输出",
-                            f"    · no paper matches sheet size {sheet['paper']}; "
-                            f"plotting scaled onto {media}"))
+                # 同一张纸只提示一次，别 34 张图刷 34 行一样的日志
+                note_key = (sheet["paper"], media)
+                if note_key not in getattr(self, "_media_noted", set()):
+                    self._media_noted = getattr(self, "_media_noted", set()) | {note_key}
+                    self.log(tr(f"    · 图幅 {sheet['paper']} 没有对应纸张，按 {media} 缩放输出",
+                                f"    · no paper matches sheet size {sheet['paper']}; "
+                                f"plotting scaled onto {media}"))
 
 
         # 注意顺序：必须先设置窗口范围，再切到「按窗口出图」。
@@ -2165,6 +2288,31 @@ class AcadPlotter:
             time.sleep(0.25)
         return False
 
+    def _wait_doc_ready(self, doc, timeout: float = 90.0) -> None:
+        """
+        等 AutoCAD 把图形真正加载完再动手。
+
+        实测（浙大一院余杭院区「数智机电系统图」5.9 MB / 27437 个实体）：
+        刚启动的 AutoCAD 上 `Documents.Open` 会立刻返回，但此时图形还在后台加载，
+        读块定义会静默失败、出图会得到空白 PDF——同一份图在「已经跑热」的实例上
+        34 个图框全对，在冷启动实例上只认出 10 个、10 页全被判空白。
+        所以先用 GetAcadState().IsQuiescent 等它闲下来，再确认实体数读得到。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            quiet = True
+            try:
+                quiet = bool(self.app.GetAcadState().IsQuiescent)
+            except Exception:                   # noqa: BLE001
+                quiet = True                    # 老版本没有这个属性，按空闲处理
+            if quiet:
+                try:
+                    if int(doc.ModelSpace.Count) > 0:
+                        return
+                except Exception:               # noqa: BLE001
+                    pass
+            time.sleep(0.5)
+
     # -------------------------------------------------- 主流程
     def _reset_cache(self):
         self._text_cache = None
@@ -2176,6 +2324,7 @@ class AcadPlotter:
         self._font_cache = None
         self._fit_noted = False
         self._paper_noted = set()
+        self._media_noted = set()      # 「图幅没有对应纸张」只提示一次
 
     def _targets(self, doc) -> list[dict]:
         """
@@ -2375,6 +2524,7 @@ class AcadPlotter:
 
         try:
             self._reset_cache()
+            self._wait_doc_ready(doc)
             for var, value in (("BACKGROUNDPLOT", 0), ("FILEDIA", 0), ("CMDDIA", 0)):
                 self._setvar(doc, var, value)
 
@@ -2449,6 +2599,7 @@ class AcadPlotter:
             return []
         try:
             self._reset_cache()
+            self._wait_doc_ready(doc)
             self.repair_missing_fonts(doc)
             plan = namer(com_retry(lambda: self._targets(doc)))
         finally:
