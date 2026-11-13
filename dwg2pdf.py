@@ -581,7 +581,17 @@ class AcadPlotter:
             self._rect_cache = {}
         if block_name in self._rect_cache:
             return self._rect_cache[block_name]
-        rect = None
+        rect = self._block_poly_rect(doc, block_name)
+        if rect is None:
+            # 图框不是一条闭合多段线画的：有的是直线拼的，有的块里只有一个嵌套块参照
+            # （图框和标题栏放在下一层块里）。这时退回「块内所有实体的包围盒」。
+            rect = self._block_bbox_rect(doc, block_name)
+        self._rect_cache[block_name] = rect
+        return rect
+
+    @staticmethod
+    def _block_poly_rect(doc, block_name: str):
+        """块定义里最大的闭合多段线矩形（最常见的图框画法）"""
         try:
             blk = doc.Blocks.Item(block_name)
             best = None
@@ -599,12 +609,84 @@ class AcadPlotter:
                 w, h = max(xs) - min(xs), max(ys) - min(ys)
                 if w > 0 and h > 0 and (best is None or w * h > best[4]):
                     best = (min(xs), min(ys), max(xs), max(ys), w * h)
-            if best:
-                rect = best[:4]
+            return best[:4] if best else None
         except Exception:
-            rect = None
-        self._rect_cache[block_name] = rect
-        return rect
+            return None
+
+    def _block_bbox_rect(self, doc, block_name: str, depth: int = 0):
+        """
+        块定义里所有实体的包围盒（块坐标系）。嵌套块参照按它的插入点/缩放/旋转换算，
+        换算不出来时再递归进下一层。
+
+        实测（鄂州文化中心「露台剧场弱电平面图」「地上BA平面图」）：图框块
+        `标准图框_A0_1189_横框_建筑A0图签_不插入_不插入__template` 的块定义里
+        只有一个块参照，真正的图框线在下一层块里；旧逻辑只找闭合多段线，一个都
+        找不到 → 退回按矩形识别 → 把图里的小方框当图框 → 出的页全是空白。
+        """
+        if depth > 3:
+            return None
+        try:
+            blk = doc.Blocks.Item(block_name)
+            count = int(blk.Count)
+        except Exception:
+            return None
+        import math
+        xs: list[float] = []
+        ys: list[float] = []
+        for i in range(count):
+            e = blk.Item(i)
+            nm = str(getattr(e, "EntityName", ""))
+            if nm == "AcDbBlockReference":
+                box = self._nested_insert_box(doc, e, depth)
+                if box:
+                    xs += [box[0], box[2]]
+                    ys += [box[1], box[3]]
+                    continue
+            try:
+                mn, mx = e.GetBoundingBox()
+            except Exception:
+                continue
+            if mn is None or mx is None:
+                continue
+            xs += [float(mn[0]), float(mx[0])]
+            ys += [float(mn[1]), float(mx[1])]
+        if not xs or not ys:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _nested_insert_box(self, doc, ref, depth: int):
+        """嵌套块参照在父块坐标系里的包围盒：先试 AutoCAD 自己的，失败再递归算"""
+        try:
+            mn, mx = ref.GetBoundingBox()
+            if mn is not None and mx is not None:
+                return (float(mn[0]), float(mn[1]), float(mx[0]), float(mx[1]))
+        except Exception:
+            pass
+        try:
+            child = str(ref.Name or "")
+        except Exception:
+            child = ""
+        if not child:
+            return None
+        rect = self._block_bbox_rect(doc, child, depth + 1)
+        if not rect:
+            return None
+        try:
+            import math
+            p = ref.InsertionPoint
+            sx, sy = float(ref.XScaleFactor), float(ref.YScaleFactor)
+            rot = float(ref.Rotation)
+        except Exception:
+            return None
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
+        px: list[float] = []
+        py: list[float] = []
+        for bx, by in ((rect[0], rect[1]), (rect[2], rect[1]),
+                       (rect[2], rect[3]), (rect[0], rect[3])):
+            bx, by = bx * sx, by * sy
+            px.append(p[0] + bx * cos_r - by * sin_r)
+            py.append(p[1] + bx * sin_r + by * cos_r)
+        return (min(px), min(py), max(px), max(py))
 
     def _frames_from_blocks(self, doc) -> list[dict]:
         """
@@ -700,7 +782,12 @@ class AcadPlotter:
             if min(rect[2] - rect[0], rect[3] - rect[1]) < 100:
                 continue                    # 块定义里的图例/小表格，不是图框
             for idx in idxs:
-                box = com_get(lambda idx=idx: self._insert_bbox(ss, idx), None)
+                # 优先用「块定义矩形 × 插入缩放」算窗口：这些图框块里带属性定义，
+                # 属性没有范围，AutoCAD 自己的 GetBoundingBox 会直接报「范围无效」，
+                # 拿不到包围盒时整张图就被跳过了（实测鄂州文化中心那份就是这样）。
+                box = com_get(lambda idx=idx, r=rect: self._insert_rect_box(ss, idx, r), None)
+                if not box:
+                    box = com_get(lambda idx=idx: self._insert_bbox(ss, idx), None)
                 if not box:
                     continue
                 parsed = self._paper_scale_from_units(box[2] - box[0], box[3] - box[1])
@@ -2054,6 +2141,30 @@ class AcadPlotter:
                               f"No file was produced (sheet size {sheet['paper']}"
                               + (f"; last error: {last_err}" if last_err else "") + ")"))
 
+    def _plot_whole_model(self, doc, pdf_path: str) -> None:
+        """
+        兜底出图：把整片模型空间按内容范围出成 1 页（布满图纸）。
+
+        为什么需要：图框识别偶尔会认错（把图里的表格框、装饰框当成图框），这时
+        每一张「图框」都是空白页，程序一页也不出——用户只看到「这个文件没转换成功」，
+        却不知道是认框错了还是图坏了。宁可出一张「整张图缩小到一页」的概览，
+        让人一眼能看到内容在哪，也好判断下一步怎么办。
+        """
+        try:
+            mn = doc.GetVariable("EXTMIN")
+            mx = doc.GetVariable("EXTMAX")
+            x0, y0 = float(mn[0]), float(mn[1])
+            x1, y1 = float(mx[0]), float(mx[1])
+        except Exception as exc:                            # noqa: BLE001
+            raise RuntimeError(tr(f"读不出模型空间范围：{_humanize_com_error(exc)}",
+                                  f"cannot read the model-space extents: "
+                                  f"{_humanize_com_error(exc)}")) from exc
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            raise RuntimeError(tr("模型空间范围为空", "the model-space extents are empty"))
+        sheet = {"paper": "A1", "paper_mm": PAPER_SIZES["A1"], "scale": 1,
+                 "x0": x0, "y0": y0, "x1": x1, "y1": y1}
+        self._plot_sheet(doc, sheet, pdf_path)
+
     def _plot_one(self, doc, layout_name: str, pdf_path: str) -> None:
         """
         把一个布局打印成 PDF。
@@ -2503,6 +2614,58 @@ class AcadPlotter:
                         f"raised so they don't plot as black blobs"))
         return fixed
 
+    def repair_view_direction(self, doc) -> bool:
+        """
+        把模型空间的视图拉回「正上方 + 目标点在视图中心」，否则窗口出图是整页空白。
+
+        实测（鄂州文化中心「2023.11.07-地上BA平面图」）：文件里存的 VIEWDIR 是
+        `(0, 0, 7791)`——方向仍朝上，但不是单位向量；TARGET 又离 VIEWCTR 六十多万
+        个图形单位。按「窗口」出图时 AutoCAD 用这套视图做投影，整个窗口被投成一团，
+        出来的 PDF 只有 1.5 KB（空白页）；而按「范围」出图却正常，所以从文件表面
+        完全看不出问题——5 个图框全被判空白，整份图纸一页都没出。
+
+        把视口写回成 `Direction=(0,0,1)`、`Target=视图中心` 之后，同一个窗口
+        1.5 KB 空白 → 907 KB 有内容。
+
+        只在内存里改，不保存原图。
+        """
+        import math
+        try:
+            vd = doc.GetVariable("VIEWDIR")
+            vx, vy, vz = float(vd[0]), float(vd[1]), float(vd[2])
+        except Exception:
+            return False
+        length = math.sqrt(vx * vx + vy * vy + vz * vz)
+        if length <= 0:
+            return False
+        unit_top = (abs(vx) <= 1e-6 * length and abs(vy) <= 1e-6 * length
+                    and abs(vz - length) <= 1e-6 * length
+                    and abs(length - 1.0) <= 1e-6)
+        if unit_top:
+            return False                    # 已经是标准的俯视，不用动
+        try:
+            # 必须先把模型空间设为当前布局：doc.ActiveViewport 指的是「当前布局」的视口，
+            # 文件打开时还停在某个图纸布局上，改那份视口对模型空间出图没有作用。
+            for i in range(doc.Layouts.Count):
+                lo = doc.Layouts.Item(i)
+                if str(lo.Name).strip().lower() == MODEL_LAYOUT:
+                    doc.ActiveLayout = lo
+                    break
+            vp = doc.ActiveViewport
+            vp.Direction = self._double_array([0.0, 0.0, 1.0])
+            # 目标点必须回原点：实测这张图里内容在 x≈-10 340 000 处，把目标点放在
+            # 视图中心（VIEWCTR）仍然出空白页，放到 (0,0,0) 才正常——出图窗口用的是
+            # 绝对坐标，目标点只在投影时参与运算，离原点越近精度越好。
+            vp.Target = self._double_array([0.0, 0.0, 0.0])
+            doc.ActiveViewport = vp          # ActiveViewport 返回的是副本，必须写回
+        except Exception:
+            return False
+        self.log(tr("    · 图纸保存的观察方向不是正上方（按窗口出图会是整页空白），"
+                    "已在内存里拉正",
+                    "    · the drawing's saved view was not a straight plan view "
+                    "(window plots came out blank); reset it in memory"))
+        return True
+
     @staticmethod
     def _layout_entity_count(doc, name: str) -> int:
         """布局（图纸空间）里有多少实体；0 表示这是个空布局"""
@@ -2566,6 +2729,7 @@ class AcadPlotter:
 
             self.repair_missing_fonts(doc)
             self.repair_ole_plot_quality(doc)
+            self.repair_view_direction(doc)
             targets = com_retry(lambda: self._targets(doc))
             plan = namer(targets)
 
@@ -2616,6 +2780,38 @@ class AcadPlotter:
                                                 tr("没有生成 PDF 文件（可能是图纸为空或打印设备不可用）",
                                                    "No PDF was created (the sheet may be empty or "
                                                    "the plot device unavailable)")))
+
+            if plan and results and all(r.status == "empty" for r in results):
+                # 认出来的每一个「图框」里都是空白 —— 基本都是图框认错了（把表格框、
+                # 装饰框当成了图纸）。这时不能一页不出就算了，出张整图概览兜底。
+                self.log(tr(f"  · 认出的 {len(results)} 处图框里全是空白（图框多半认错了），"
+                            f"改为把整片模型空间出成 1 页概览",
+                            f"  · all {len(results)} detected frame(s) came out blank "
+                            f"(the frames were probably misdetected); "
+                            f"plotting the whole model space as a single overview page"))
+                stem = os.path.splitext(os.path.basename(dwg_path))[0]
+                fallback = namer([{"name": stem, "paper": "", "x0": None}])[0][1]
+                try:
+                    os.makedirs(os.path.dirname(fallback), exist_ok=True)
+                    if os.path.isfile(fallback):
+                        _remove_quietly(fallback)
+                    com_retry(lambda: self._plot_whole_model(doc, fallback))
+                except EmptySheet:
+                    self.log(tr("  · 整片模型空间也是空的，这份图纸确实没有可出的内容",
+                                "  · the whole model space is blank too — this drawing "
+                                "really has nothing to plot"))
+                except Exception as exc:          # noqa: BLE001
+                    results.append(LayoutResult(win_path, stem, fallback, "fail",
+                                                tr(f"整图兜底出图失败："
+                                                   f"{_humanize_com_error(exc)}",
+                                                   f"fallback whole-drawing plot failed: "
+                                                   f"{_humanize_com_error(exc)}")))
+                else:
+                    if self._wait_file(fallback):
+                        size_kb = os.path.getsize(fallback) / 1024
+                        results = [LayoutResult(win_path, stem, fallback, "ok",
+                                                f"{tr('整图概览', 'whole drawing')} · "
+                                                f"{size_kb:.0f} KB")]
         finally:
             try:
                 com_retry(lambda: doc.Close(False), attempts=4)   # 不保存，保持原图不动
